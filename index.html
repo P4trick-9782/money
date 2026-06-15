@@ -272,6 +272,81 @@ async function e2eeDecrypt(token, payload){
   return JSON.parse(await decWith(key, payload));
 }
 
+// ── Supabase 後端設定 ──────────────────────────────────────────────
+const SUPABASE_URL = "https://gyrzdjfbdjepxszuwisk.supabase.co";
+const SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imd5cnpkamZiZGplcHhzenV3aXNrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE1MzcwODgsImV4cCI6MjA5NzExMzA4OH0.z5i9P4uZuc1SXo2OI_zlMPoRsKY4rq9DiLnbKZdiaFw";
+const SB_AUTH_KEY = "fin_sb_session"; // 存放 access token / refresh token / uid
+
+function sbSession(){ try{ return JSON.parse(localStorage.getItem(SB_AUTH_KEY)||"null"); }catch{ return null; } }
+function sbSetSession(s){ if(s) localStorage.setItem(SB_AUTH_KEY, JSON.stringify(s)); else localStorage.removeItem(SB_AUTH_KEY); }
+
+// 註冊
+async function sbSignUp(email, password){
+  const res = await fetch(`${SUPABASE_URL}/auth/v1/signup`,{
+    method:"POST", headers:{ "Content-Type":"application/json", "apikey":SUPABASE_ANON },
+    body:JSON.stringify({ email, password })
+  });
+  const data = await res.json();
+  if(!res.ok) throw new Error(data.msg||data.error_description||data.error||"註冊失敗");
+  if(data.access_token){ sbSetSession({ access_token:data.access_token, refresh_token:data.refresh_token, uid:data.user?.id, email }); return true; }
+  // 若開了信箱驗證，access_token 不會直接回傳
+  return "verify";
+}
+// 登入
+async function sbSignIn(email, password){
+  const res = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=password`,{
+    method:"POST", headers:{ "Content-Type":"application/json", "apikey":SUPABASE_ANON },
+    body:JSON.stringify({ email, password })
+  });
+  const data = await res.json();
+  if(!res.ok) throw new Error(data.msg||data.error_description||data.error||"登入失敗");
+  sbSetSession({ access_token:data.access_token, refresh_token:data.refresh_token, uid:data.user?.id, email });
+  return true;
+}
+// 換新 token（access token 過期時）
+async function sbRefresh(){
+  const s = sbSession(); if(!s?.refresh_token) return false;
+  const res = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`,{
+    method:"POST", headers:{ "Content-Type":"application/json", "apikey":SUPABASE_ANON },
+    body:JSON.stringify({ refresh_token:s.refresh_token })
+  });
+  const data = await res.json();
+  if(!res.ok) return false;
+  sbSetSession({ access_token:data.access_token, refresh_token:data.refresh_token, uid:data.user?.id||s.uid, email:s.email });
+  return true;
+}
+function sbSignOut(){ sbSetSession(null); }
+
+// 帶授權的 fetch；遇 401 自動 refresh 一次
+async function sbFetch(path, opts={}, retried=false){
+  const s = sbSession();
+  const headers = Object.assign({ "apikey":SUPABASE_ANON, "Authorization":`Bearer ${s?.access_token||SUPABASE_ANON}`, "Content-Type":"application/json" }, opts.headers||{});
+  const res = await fetch(`${SUPABASE_URL}${path}`, Object.assign({}, opts, { headers }));
+  if(res.status===401 && !retried){ if(await sbRefresh()) return sbFetch(path, opts, true); }
+  return res;
+}
+
+// 上傳（upsert 自己那列）— 只送加密亂碼
+async function sbPush(encBlob){
+  const s = sbSession(); if(!s?.uid) throw new Error("尚未登入");
+  const res = await sbFetch(`/rest/v1/fin_data?on_conflict=id`,{
+    method:"POST",
+    headers:{ "Prefer":"resolution=merge-duplicates" },
+    body:JSON.stringify([{ id:s.uid, enc:encBlob, updated_at:new Date().toISOString() }])
+  });
+  if(!res.ok){ const t=await res.text(); throw new Error("上傳失敗："+t.slice(0,80)); }
+  return true;
+}
+// 下載自己那列
+async function sbPull(){
+  const s = sbSession(); if(!s?.uid) throw new Error("尚未登入");
+  const res = await sbFetch(`/rest/v1/fin_data?id=eq.${s.uid}&select=enc`,{ method:"GET" });
+  if(!res.ok){ const t=await res.text(); throw new Error("下載失敗："+t.slice(0,80)); }
+  const rows = await res.json();
+  return rows?.[0]?.enc || null;
+}
+
+
 // encrypted load/save — falls back to plaintext for legacy/un-encrypted data
 async function load(k){
   try{
@@ -443,25 +518,73 @@ function App({ onLock }){
     }catch{ showToast("下載失敗，請檢查網址","warn"); }
   };
 
+  // ── Supabase 後端：登入狀態 ──
+  const [sbUser,setSbUser] = useState(sbSession()?.email||null);
+
+  const sbLogin=async(email,password,isSignup)=>{
+    try{
+      if(isSignup){
+        const r=await sbSignUp(email,password);
+        if(r==="verify"){ showToast("已寄出驗證信，請收信後再登入","warn"); return; }
+      } else {
+        await sbSignIn(email,password);
+      }
+      setSbUser(sbSession()?.email||email);
+      showToast(isSignup?"註冊並登入成功 ✓":"登入成功 ✓");
+    }catch(e){ showToast(e.message||"失敗","warn"); }
+  };
+  const sbLogout=()=>{ sbSignOut(); setSbUser(null); showToast("已登出"); };
+
+  // Supabase 上傳：沿用端到端加密（用 sync.token 當加密金鑰）
+  const sbUpload=async(silent=false)=>{
+    if(!sbSession()?.uid){ if(!silent)showToast("請先登入 Supabase","warn"); return false; }
+    if(!sync.token){ if(!silent)showToast("請先設定加密密鑰","warn"); return false; }
+    if(!silent)showToast("加密上傳到 Supabase…");
+    try{
+      const blob=await e2eeEncrypt(sync.token,{txns,recurring,goals});
+      await sbPush(blob);
+      setSync(s=>({...s,lastSync:new Date().toISOString()}));
+      if(!silent)showToast("已上傳到 Supabase 🔐"); else { setToast({msg:"已自動備份 ☁️",type:"success"}); setTimeout(()=>setToast(null),1500); }
+      return true;
+    }catch(e){ if(!silent)showToast(e.message||"上傳失敗","warn"); return false; }
+  };
+  const sbDownload=async()=>{
+    if(!sbSession()?.uid){ showToast("請先登入 Supabase","warn"); return; }
+    if(!sync.token){ showToast("請先設定加密密鑰","warn"); return; }
+    showToast("從 Supabase 下載…");
+    try{
+      const blob=await sbPull();
+      if(!blob){ showToast("雲端尚無資料","warn"); return; }
+      let obj; try{ obj=await e2eeDecrypt(sync.token,blob); }catch{ showToast("解密失敗，密鑰不符","warn"); return; }
+      if(obj.txns)setTxns(obj.txns);
+      if(obj.recurring)setRec(obj.recurring);
+      if(obj.goals)setGoals(obj.goals);
+      setSync(s=>({...s,lastSync:new Date().toISOString()}));
+      showToast("已從 Supabase 下載並解密 🔐");
+    }catch(e){ showToast(e.message||"下載失敗","warn"); }
+  };
+
   // ── 定時自動上傳雲端備份 ──
   // 用 ref 保存最新的 push 函式，interval 不需隨資料重建
-  const pushRef = useRef(pushCloud);
-  pushRef.current = pushCloud;
+  // 已登入 Supabase 時優先用 Supabase，否則用 Google Sheet
+  const pushRef = useRef();
+  pushRef.current = (silent)=> sbSession()?.uid ? sbUpload(silent) : pushCloud(silent);
+  const autoReady = ()=> (sbSession()?.uid && sync.token) || (sync.url && sync.token);
   useEffect(()=>{
     if(!loaded) return;
     const mins = Number(sync.autoMins)||0;
-    if(mins<=0 || !sync.url || !sync.token) return; // 關閉或未設定
+    if(mins<=0 || !autoReady()) return;
     const id = setInterval(()=>{ pushRef.current(true); }, mins*60*1000);
     return ()=>clearInterval(id);
-  },[loaded, sync.autoMins, sync.url, sync.token]);
+  },[loaded, sync.autoMins, sync.url, sync.token, sbUser]);
 
   // 「每次變動」模式：資料改變後 8 秒內無新變動就自動備份（防抖）
   useEffect(()=>{
     if(!loaded) return;
-    if(sync.autoMins!==-1 || !sync.url || !sync.token) return;
+    if(sync.autoMins!==-1 || !autoReady()) return;
     const id = setTimeout(()=>{ pushRef.current(true); }, 8000);
     return ()=>clearTimeout(id);
-  },[txns, recurring, goals, loaded, sync.autoMins, sync.url, sync.token]);
+  },[txns, recurring, goals, loaded, sync.autoMins, sync.url, sync.token, sbUser]);
 
   // stats
   const mTx = txns.filter(t=>t.date.startsWith(month));
@@ -488,7 +611,7 @@ function App({ onLock }){
         {tab==="recurring"&& <Recurring {...{recurring,delRec,setModal}}/>}
         {tab==="goals"    && <Goals {...{goals,delGoal,updateGoal,setModal}}/>}
         {tab==="stats"    && <Stats {...{txns,recurring,month,setMonth,year,setYear}}/>}
-        {tab==="more"     && <More {...{exportCSV,exportJSON,importJSON,sync,setSync,pushCloud,pullCloud,showToast,onLock}}/>}
+        {tab==="more"     && <More {...{exportCSV,exportJSON,importJSON,sync,setSync,pushCloud,pullCloud,showToast,onLock,sbUser,sbLogin,sbLogout,sbUpload,sbDownload}}/>}
         </div>
       </div>
       <TabBar tab={tab} setTab={changeTab}/>
@@ -858,11 +981,35 @@ function CatBreakdown({title,catList,total}){
 }
 
 // ══════════════ MORE (sync + import/export + shortcuts + security) ═══
-function More({exportCSV,exportJSON,importJSON,sync,setSync,pushCloud,pullCloud,showToast,onLock}){
+function SupaLogin({onLogin}){
+  const [email,setEmail]=useState("");
+  const [pw,setPw]=useState("");
+  const [mode,setMode]=useState("login"); // login | signup
+  const [busy,setBusy]=useState(false);
+  const submit=async()=>{
+    if(!email||!pw){ return; }
+    setBusy(true);
+    await onLogin(email.trim(),pw,mode==="signup");
+    setBusy(false);
+  };
+  return (
+    <div>
+      <input style={S.inputField} type="email" placeholder="Email" value={email} onChange={e=>setEmail(e.target.value)} autoCapitalize="none"/>
+      <input style={S.inputField} type="password" placeholder="密碼（至少 6 碼）" value={pw} onChange={e=>setPw(e.target.value)}/>
+      <button style={{...S.primaryBtn,marginTop:8,background:"#3ECF8E"}} onClick={submit} disabled={busy}>
+        {busy?"處理中…":(mode==="signup"?"註冊並登入":"登入")}
+      </button>
+      <button style={{...S.smallBtn,marginTop:8,width:"100%",background:"transparent"}} onClick={()=>setMode(mode==="signup"?"login":"signup")}>
+        {mode==="signup"?"已有帳號？改為登入":"還沒有帳號？改為註冊"}
+      </button>
+    </div>
+  );
+}
+
+function More({exportCSV,exportJSON,importJSON,sync,setSync,pushCloud,pullCloud,showToast,onLock,sbUser,sbLogin,sbLogout,sbUpload,sbDownload}){
   const [urlInput,setUrlInput]=useState(sync.url||"");
   const [tokenInput,setTokenInput]=useState(sync.token||"");
   const [showScript,setShowScript]=useState(false);
-  const [showSupa,setShowSupa]=useState(false);
   const [bioOn,setBioOn]=useState(bioEnabled());
   const fileRef=useRef();
   const baseURL=typeof window!=="undefined"?window.location.href.split("?")[0]:"";
@@ -911,16 +1058,6 @@ function doPost(e){
   return ContentService.createTextOutput(JSON.stringify({ok:true}));
 }`;
 
-  const supaSchema=`-- 在 Supabase SQL Editor 執行，建立資料表
-create table if not exists fin_data (
-  id text primary key,
-  enc text,                       -- 只存加密後的亂碼
-  updated_at timestamptz default now()
-);
--- 開啟 Row Level Security，僅允許已登入者存取自己的列
-alter table fin_data enable row level security;
-create policy "own row" on fin_data
-  for all using (auth.uid()::text = id) with check (auth.uid()::text = id);`;
 
   return (
     <div style={S.tab}>
@@ -994,29 +1131,31 @@ create policy "own row" on fin_data
         )}
       </div>
 
-      {/* Supabase advanced backend */}
-      <div style={S.card}>
-        <p style={{fontSize:15,fontWeight:"600",margin:"0 0 4px"}}>🗄 進階：Supabase 後端（選用）</p>
-        <p style={{fontSize:12,color:"#8E8E93",margin:"0 0 10px",lineHeight:1.5}}>
-          想要真正的帳號系統、登入驗證、存取紀錄與伺服器端防護，可改用 Supabase（免費方案足夠）。需你本人註冊並建立專案。
-        </p>
-        <button style={{...S.smallBtn,width:"100%"}} onClick={()=>setShowSupa(!showSupa)}>{showSupa?"▼ 收合":"▶ 查看建置步驟"}</button>
-        {showSupa && (
-          <div style={{marginTop:10}}>
-            {["到 supabase.com 註冊並建立一個新專案（Project）","左側 SQL Editor 貼上下方 schema 並執行，建立資料表","Authentication → 啟用 Email 或 Google 登入","Project Settings → API 取得 Project URL 與 anon key","回到本 App，把資料以端到端加密後存入 fin_data 表的 enc 欄位","因 RLS 政策，每位使用者只能存取自己的那一列"].map((s,i)=>(
-              <div key={i} style={{display:"flex",gap:8,marginBottom:6,alignItems:"flex-start"}}>
-                <span style={S.stepNum}>{i+1}</span><span style={{fontSize:12,color:"#3C3C43",lineHeight:1.5}}>{s}</span>
-              </div>
-            ))}
-            <div style={{...S.hintBox,marginBottom:8}}>
-              這條路線比 Google Sheet 安全（有身分驗證、存取控制、稽核），但設定較複雜。資料同樣經本機端到端加密，連 Supabase 也只看到亂碼。完成註冊後把 URL 與 anon key 給我，我可以幫你接上同步程式碼。
+      {/* Supabase backend — 已接上 */}
+      <div style={{...S.card,background:"#F0FFF4",border:"1px solid #C6F6D5"}}>
+        <p style={{fontSize:15,fontWeight:"600",margin:"0 0 4px"}}>🗄 Supabase 雲端帳號</p>
+        {!sbUser ? (
+          <>
+            <p style={{fontSize:12,color:"#2F855A",margin:"0 0 10px",lineHeight:1.5}}>
+              用 Email 登入，資料存到你的 Supabase（端到端加密，雲端只看到亂碼）。手機電腦用同一組帳號即互通。
+            </p>
+            <SupaLogin onLogin={sbLogin}/>
+          </>
+        ) : (
+          <>
+            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10}}>
+              <span style={{fontSize:13,color:"#2F855A"}}>已登入：<b>{sbUser}</b></span>
+              <button style={{...S.smallBtn,background:"#fff"}} onClick={sbLogout}>登出</button>
             </div>
-            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",margin:"8px 0 4px"}}>
-              <span style={{fontSize:12,fontWeight:"600"}}>資料表 schema（SQL）</span>
-              <button style={S.copyBtn} onClick={()=>{navigator.clipboard?.writeText(supaSchema);showToast("已複製 SQL");}}>複製</button>
+            {!sync.token && <div style={{...S.hintBox,marginBottom:10}}>⚠️ 請先在上方「雲端同步」卡片設定一組「同步密鑰」，它同時是 Supabase 的加密金鑰。手機電腦要用同一組。</div>}
+            <div style={{display:"flex",gap:8}}>
+              <button style={{...S.primaryBtn,marginTop:0,flex:1}} onClick={()=>sbUpload()}>⬆️ 上傳到 Supabase</button>
+              <button style={{...S.primaryBtn,marginTop:0,flex:1,background:"#34C759"}} onClick={sbDownload}>⬇️ 從 Supabase 下載</button>
             </div>
-            <code style={S.codeBlock}>{supaSchema}</code>
-          </div>
+            <p style={{fontSize:11,color:"#2F855A",margin:"10px 0 0",lineHeight:1.5}}>
+              已登入後，上方「自動上傳備份」會自動改用 Supabase。閒置超過一週專案會休眠，到 Supabase 後台按 Restore 即可喚醒，資料不會遺失。
+            </p>
+          </>
         )}
       </div>
 
