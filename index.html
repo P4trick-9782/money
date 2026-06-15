@@ -13,10 +13,99 @@
 <style>
   * { -webkit-tap-highlight-color: transparent; }
   html,body { margin:0; padding:0; background:#F2F2F7; overscroll-behavior:none; }
-  @keyframes spin { to { transform: rotate(360deg); } }
   input, button, select { font-family: inherit; }
   /* iOS safe area */
   body { padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom); }
+
+  /* ── iOS-style easing curves ── */
+  :root{
+    --ease-ios: cubic-bezier(0.32, 0.72, 0, 1);      /* 細膩減速 */
+    --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+    --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1); /* 輕微彈性 */
+  }
+
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* 分頁淡入 + 輕微上移 */
+  @keyframes pageFade {
+    from { opacity:0; transform: translateY(8px); }
+    to   { opacity:1; transform: translateY(0); }
+  }
+  /* 頁面從右滑入（前進方向） */
+  @keyframes slideInRight {
+    from { opacity:0; transform: translateX(22px); }
+    to   { opacity:1; transform: translateX(0); }
+  }
+  /* 頁面從左滑入（後退方向） */
+  @keyframes slideInLeft {
+    from { opacity:0; transform: translateX(-22px); }
+    to   { opacity:1; transform: translateX(0); }
+  }
+  /* 彈窗背景淡入 */
+  @keyframes overlayFade { from{opacity:0;} to{opacity:1;} }
+  /* 彈窗面板上滑 */
+  @keyframes sheetUp {
+    from { transform: translateY(100%); }
+    to   { transform: translateY(0); }
+  }
+  /* 卡片依序進場 */
+  @keyframes cardIn {
+    from { opacity:0; transform: translateY(12px) scale(0.98); }
+    to   { opacity:1; transform: translateY(0) scale(1); }
+  }
+  /* FAB 彈入 */
+  @keyframes fabPop {
+    from { opacity:0; transform: scale(0.4); }
+    to   { opacity:1; transform: scale(1); }
+  }
+  /* toast 上滑淡入 */
+  @keyframes toastIn {
+    from { opacity:0; transform: translate(-50%, -12px); }
+    to   { opacity:1; transform: translate(-50%, 0); }
+  }
+  /* 數字/進度輕彈 */
+  @keyframes popScale {
+    0%{ transform:scale(0.8); opacity:0; }
+    60%{ transform:scale(1.05); }
+    100%{ transform:scale(1); opacity:1; }
+  }
+
+  .anim-page  { animation: pageFade 0.34s var(--ease-ios) both; }
+  .anim-right { animation: slideInRight 0.34s var(--ease-ios) both; }
+  .anim-left  { animation: slideInLeft 0.34s var(--ease-ios) both; }
+  .anim-fab   { animation: fabPop 0.4s var(--ease-spring) both; }
+  .anim-toast { animation: toastIn 0.28s var(--ease-out) both; }
+  .anim-card  { animation: cardIn 0.4s var(--ease-out) both; }
+
+  /* 卡片進場的交錯延遲 */
+  .stagger > * { animation: cardIn 0.42s var(--ease-out) both; }
+  .stagger > *:nth-child(1){ animation-delay:.02s; }
+  .stagger > *:nth-child(2){ animation-delay:.06s; }
+  .stagger > *:nth-child(3){ animation-delay:.10s; }
+  .stagger > *:nth-child(4){ animation-delay:.14s; }
+  .stagger > *:nth-child(5){ animation-delay:.18s; }
+  .stagger > *:nth-child(6){ animation-delay:.22s; }
+  .stagger > *:nth-child(7){ animation-delay:.26s; }
+  .stagger > *:nth-child(8){ animation-delay:.30s; }
+
+  /* ── 全域點擊回饋：按下時輕縮 ── */
+  button { transition: transform 0.12s var(--ease-out), opacity 0.12s ease, background-color 0.2s ease; }
+  button:active { transform: scale(0.94); opacity:0.85; }
+
+  /* 列表項目按壓回饋 */
+  .pressable { transition: transform 0.15s var(--ease-out), background-color 0.2s ease; }
+  .pressable:active { transform: scale(0.985); }
+
+  /* 平滑捲動 */
+  .smooth-scroll { -webkit-overflow-scrolling: touch; scroll-behavior: smooth; }
+
+  /* 進度條寬度過渡（覆蓋既有 inline） */
+  @keyframes growWidth { from{ width:0 !important; } }
+
+  /* 尊重使用者「減少動態效果」設定 */
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation-duration:0.001s !important; animation-delay:0s !important; transition-duration:0.001s !important; }
+  }
 </style>
 <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
@@ -237,11 +326,12 @@ function monthlyEquiv(r){
 // ══════════════════════════════════════════════════════════════════
 function App({ onLock }){
   const [tab,setTab]         = useState("home");
+  const [tabDir,setTabDir]   = useState("right"); // 切換方向：right=前進, left=後退
   const [txns,setTxns]       = useState([]);
   const [recurring,setRec]   = useState([]);
   const [goals,setGoals]     = useState([]);
   const [pending,setPending] = useState([]); // 待確認的刷卡記錄
-  const [sync,setSync]       = useState({ url:"", token:"", lastSync:null });
+  const [sync,setSync]       = useState({ url:"", token:"", lastSync:null, autoMins:0 });
   const [modal,setModal]     = useState(null);
   const [toast,setToast]     = useState(null);
   const [loaded,setLoaded]   = useState(false);
@@ -317,10 +407,10 @@ function App({ onLock }){
   };
 
   // ── Cloud sync via Google Apps Script (token auth + end-to-end encryption) ──
-  const pushCloud=async()=>{
-    if(!sync.url){ showToast("請先設定同步網址","warn"); return; }
-    if(!sync.token){ showToast("請先設定同步密鑰","warn"); return; }
-    showToast("加密上傳中…");
+  const pushCloud=async(silent=false)=>{
+    if(!sync.url){ if(!silent)showToast("請先設定同步網址","warn"); return false; }
+    if(!sync.token){ if(!silent)showToast("請先設定同步密鑰","warn"); return false; }
+    if(!silent)showToast("加密上傳中…");
     try{
       // encrypt the whole payload locally; cloud only stores ciphertext
       const blob = await e2eeEncrypt(sync.token, {txns,recurring,goals});
@@ -328,8 +418,10 @@ function App({ onLock }){
         headers:{"Content-Type":"text/plain;charset=utf-8"},
         body:JSON.stringify({ action:"push", token:sync.token, enc:blob }) });
       setSync(s=>({...s,lastSync:new Date().toISOString()}));
-      showToast("已加密上傳到雲端 🔐☁️");
-    }catch{ showToast("上傳失敗，請檢查網址","warn"); }
+      if(!silent)showToast("已加密上傳到雲端 🔐☁️");
+      else { setToast({msg:"已自動備份 ☁️",type:"success"}); setTimeout(()=>setToast(null),1500); }
+      return true;
+    }catch{ if(!silent)showToast("上傳失敗，請檢查網址","warn"); return false; }
   };
   const pullCloud=async()=>{
     if(!sync.url){ showToast("請先設定同步網址","warn"); return; }
@@ -351,6 +443,26 @@ function App({ onLock }){
     }catch{ showToast("下載失敗，請檢查網址","warn"); }
   };
 
+  // ── 定時自動上傳雲端備份 ──
+  // 用 ref 保存最新的 push 函式，interval 不需隨資料重建
+  const pushRef = useRef(pushCloud);
+  pushRef.current = pushCloud;
+  useEffect(()=>{
+    if(!loaded) return;
+    const mins = Number(sync.autoMins)||0;
+    if(mins<=0 || !sync.url || !sync.token) return; // 關閉或未設定
+    const id = setInterval(()=>{ pushRef.current(true); }, mins*60*1000);
+    return ()=>clearInterval(id);
+  },[loaded, sync.autoMins, sync.url, sync.token]);
+
+  // 「每次變動」模式：資料改變後 8 秒內無新變動就自動備份（防抖）
+  useEffect(()=>{
+    if(!loaded) return;
+    if(sync.autoMins!==-1 || !sync.url || !sync.token) return;
+    const id = setTimeout(()=>{ pushRef.current(true); }, 8000);
+    return ()=>clearTimeout(id);
+  },[txns, recurring, goals, loaded, sync.autoMins, sync.url, sync.token]);
+
   // stats
   const mTx = txns.filter(t=>t.date.startsWith(month));
   const mInc=sum(mTx,"income"), mExp=sum(mTx,"expense"), mSav=sum(mTx,"saving");
@@ -359,19 +471,28 @@ function App({ onLock }){
 
   if(!loaded) return <div style={S.loadWrap}><div style={S.spinner}/><p style={{color:"#8E8E93",marginTop:12,fontSize:14}}>載入中…</p></div>;
 
+  const TAB_ORDER=["home","txns","recurring","goals","stats","more"];
+  const changeTab=(next)=>{
+    const dir = TAB_ORDER.indexOf(next) >= TAB_ORDER.indexOf(tab) ? "right" : "left";
+    setTabDir(dir); setTab(next);
+  };
+  const animClass = tabDir==="right" ? "anim-right" : "anim-left";
+
   return (
     <div style={S.shell}>
       <div style={S.statusBar}/>
       <div style={S.content}>
+        <div key={tab} className={animClass}>
         {tab==="home"     && <Home {...{mTx,mInc,mExp,mSav,recMonthly,balance,month,setMonth,delTx,setModal,recurring,goals,pending,confirmPending,dismissPending,updatePending,showToast}}/>}
         {tab==="txns"     && <Txns {...{txns,delTx,month,setMonth}}/>}
         {tab==="recurring"&& <Recurring {...{recurring,delRec,setModal}}/>}
         {tab==="goals"    && <Goals {...{goals,delGoal,updateGoal,setModal}}/>}
         {tab==="stats"    && <Stats {...{txns,recurring,month,setMonth,year,setYear}}/>}
         {tab==="more"     && <More {...{exportCSV,exportJSON,importJSON,sync,setSync,pushCloud,pullCloud,showToast,onLock}}/>}
+        </div>
       </div>
-      <TabBar tab={tab} setTab={setTab}/>
-      <button style={S.fab} onClick={()=>setModal("add")}>＋</button>
+      <TabBar tab={tab} setTab={changeTab}/>
+      <button style={S.fab} className="anim-fab" onClick={()=>setModal("add")}>＋</button>
 
       {modal==="add"      && <AddModal onAdd={addTx} onClose={()=>setModal(null)} onVoice={()=>setModal("voice")} onReceipt={()=>setModal("receipt")} onCSV={()=>setModal("csv")}/>}
       {modal==="voice"    && <VoiceModal onAdd={addTx} onClose={()=>setModal(null)} showToast={showToast}/>}
@@ -380,7 +501,7 @@ function App({ onLock }){
       {modal==="recurring"&& <RecurringModal onAdd={addRec} onClose={()=>setModal(null)}/>}
       {modal==="goal"     && <GoalModal onAdd={addGoal} onClose={()=>setModal(null)}/>}
 
-      {toast && <div style={{...S.toast,background:toast.type==="warn"?"#FF9500":"#34C759"}}>{toast.msg}</div>}
+      {toast && <div className="anim-toast" style={{...S.toast,background:toast.type==="warn"?"#FF9500":"#34C759"}}>{toast.msg}</div>}
     </div>
   );
 }
@@ -465,7 +586,7 @@ function Home({mTx,mInc,mExp,mSav,recMonthly,balance,month,setMonth,delTx,setMod
         </div>
       )}
 
-      <div style={S.balanceCard}>
+      <div className="anim-card" style={S.balanceCard}>
         <p style={S.balanceLabel}>本月結餘</p>
         <p style={{...S.balanceAmt,color:balance>=0?"#fff":"#FFD60A"}}>NT$ {fmtMoney(balance)}</p>
         <div style={S.balanceRow}>
@@ -473,7 +594,7 @@ function Home({mTx,mInc,mExp,mSav,recMonthly,balance,month,setMonth,delTx,setMod
         </div>
       </div>
       {recMonthly>0 && (
-        <div style={S.recBanner} onClick={()=>setModal("recurring")}>
+        <div className="pressable" style={S.recBanner} onClick={()=>setModal("recurring")}>
           <span>🔁</span><span style={{flex:1,marginLeft:8}}>固定扣款（月均攤）</span>
           <span style={{fontWeight:"600",color:"#FF9500"}}>NT$ {fmtMoney(recMonthly)}/月</span>
           <span style={{marginLeft:6,color:"#C7C7CC"}}>›</span>
@@ -497,7 +618,7 @@ function Home({mTx,mInc,mExp,mSav,recMonthly,balance,month,setMonth,delTx,setMod
         ))}
       </div>
       <Section title="近期記錄" sub={mTx.length?`共 ${mTx.length} 筆`:""}/>
-      {recent.length===0 ? <Empty icon="📋" msg="本月還沒有記錄，點 ＋ 開始記帳"/> : recent.map(t=><TxRow key={t.id} tx={t} onDelete={delTx}/>)}
+      {recent.length===0 ? <Empty icon="📋" msg="本月還沒有記錄，點 ＋ 開始記帳"/> : <div className="stagger">{recent.map(t=><TxRow key={t.id} tx={t} onDelete={delTx}/>)}</div>}
       <div style={{height:100}}/>
     </div>
   );
@@ -834,10 +955,27 @@ create policy "own row" on fin_data
         </div>
         <button style={{...S.smallBtn,marginTop:6}} onClick={()=>{setSync(s=>({...s,url:urlInput,token:tokenInput}));showToast("已儲存");}}>儲存設定</button>
         <div style={{display:"flex",gap:8,marginTop:10}}>
-          <button style={{...S.primaryBtn,marginTop:0,flex:1}} onClick={pushCloud}>⬆️ 上傳到雲端</button>
+          <button style={{...S.primaryBtn,marginTop:0,flex:1}} onClick={()=>pushCloud()}>⬆️ 上傳到雲端</button>
           <button style={{...S.primaryBtn,marginTop:0,flex:1,background:"#34C759"}} onClick={pullCloud}>⬇️ 從雲端下載</button>
         </div>
         {sync.lastSync && <p style={{fontSize:11,color:"#8E8E93",textAlign:"center",marginTop:8}}>上次同步：{new Date(sync.lastSync).toLocaleString("zh-TW")}</p>}
+
+        {/* 自動上傳備份 */}
+        <div style={{borderTop:"1px solid #F2F2F7",marginTop:12,paddingTop:12}}>
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:6}}>
+            <span style={{fontSize:14,fontWeight:"600"}}>🔄 自動上傳備份</span>
+            <span style={{fontSize:11,color:sync.autoMins?"#34C759":"#8E8E93"}}>{sync.autoMins?"已開啟":"已關閉"}</span>
+          </div>
+          <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
+            {[["關閉",0],["15 分",15],["30 分",30],["1 小時",60],["每次變動",-1]].map(([l,v])=>(
+              <button key={l} style={{...S.chipBtn,...(sync.autoMins===v?{background:"#007AFF",color:"#fff",borderColor:"#007AFF"}:{})}}
+                onClick={()=>{ if((v!==0)&&(!sync.url||!sync.token)){showToast("請先設定網址與密鑰","warn");return;} setSync(s=>({...s,autoMins:v})); showToast(v===0?"已關閉自動備份":"已開啟自動備份"); }}>{l}</button>
+            ))}
+          </div>
+          <p style={{fontSize:11,color:"#8E8E93",margin:"8px 0 0",lineHeight:1.5}}>
+            App 開啟且已解鎖時，每隔所選時間自動加密上傳。「每次變動」為記帳後約 8 秒自動備份。
+          </p>
+        </div>
         <button style={{...S.smallBtn,marginTop:10,width:"100%"}} onClick={()=>setShowScript(!showScript)}>{showScript?"▼ 收合":"▶ 查看設定教學"}</button>
         {showScript && (
           <div style={{marginTop:10}}>
@@ -1102,7 +1240,7 @@ function CSVModal({onImport,onClose}){
 function TxRow({tx,onDelete,showDate}){
   const c=TYPE_COLOR[tx.type]||TYPE_COLOR.expense;
   return (
-    <div style={S.txRow}>
+    <div className="pressable" style={S.txRow}>
       <div style={{...S.txIcon,background:c.light}}><span style={{fontSize:18}}>{ICONS[tx.category]||"📦"}</span></div>
       <div style={{flex:1}}>
         <div style={{display:"flex",justifyContent:"space-between"}}>
@@ -1129,10 +1267,18 @@ function Section({title,sub}){ return <div style={S.sectionHeader}><span style={
 function Empty({icon,msg}){ return <div style={S.empty}><span style={{fontSize:40}}>{icon}</span><p style={{color:"#8E8E93",fontSize:14,margin:"8px 0 0"}}>{msg}</p></div>; }
 function TabBar({tab,setTab}){
   const tabs=[["home","🏠","首頁"],["txns","📋","明細"],["recurring","🔁","固定"],["goals","🎯","目標"],["stats","📊","統計"],["more","☁️","同步"]];
-  return <div style={S.tabBar}>{tabs.map(([id,i,l])=>(<button key={id} style={{...S.tabBtn,...(tab===id?S.tabActive:{})}} onClick={()=>setTab(id)}><span style={{fontSize:19}}>{i}</span><span style={{fontSize:9,marginTop:2,color:tab===id?"#007AFF":"#8E8E93"}}>{l}</span></button>))}</div>;
+  return <div style={S.tabBar}>{tabs.map(([id,i,l])=>(<button key={id} style={{...S.tabBtn,...(tab===id?S.tabActive:{})}} onClick={()=>setTab(id)}><span style={{fontSize:19,display:"inline-block",transition:"transform 0.3s var(--ease-spring)",transform:tab===id?"scale(1.18)":"scale(1)"}}>{i}</span><span style={{fontSize:9,marginTop:2,color:tab===id?"#007AFF":"#8E8E93",transition:"color 0.2s ease"}}>{l}</span></button>))}</div>;
 }
 function Modal({title,onClose,children}){
-  return <div style={S.overlay} onClick={onClose}><div style={S.sheet} onClick={e=>e.stopPropagation()}><div style={S.handle}/><div style={S.modalHeader}><span style={{fontWeight:"700",fontSize:17}}>{title}</span><button style={S.closeBtn} onClick={onClose}>✕</button></div><div style={{overflowY:"auto",maxHeight:"72vh",paddingBottom:20}}>{children}</div></div></div>;
+  const [closing,setClosing]=useState(false);
+  const doClose=()=>{ setClosing(true); setTimeout(onClose,240); };
+  return <div className="anim-overlay" style={{...S.overlay,animation:closing?"overlayFade 0.24s ease reverse both":"overlayFade 0.24s ease both"}} onClick={doClose}>
+    <div style={{...S.sheet,animation:closing?"sheetUp 0.26s var(--ease-ios) reverse both":"sheetUp 0.34s var(--ease-ios) both"}} onClick={e=>e.stopPropagation()}>
+      <div style={S.handle}/>
+      <div style={S.modalHeader}><span style={{fontWeight:"700",fontSize:17}}>{title}</span><button style={S.closeBtn} onClick={doClose}>✕</button></div>
+      <div className="smooth-scroll" style={{overflowY:"auto",maxHeight:"72vh",paddingBottom:20}}>{children}</div>
+    </div>
+  </div>;
 }
 
 // ══════════════ STYLES ════════════════════════════════════════════
@@ -1192,6 +1338,7 @@ const S={
   inputField:{width:"100%",padding:12,borderRadius:12,border:"1.5px solid #E5E5EA",background:"#fff",fontSize:15,outline:"none",boxSizing:"border-box",marginBottom:4},
   primaryBtn:{width:"100%",padding:14,background:"#007AFF",color:"#fff",border:"none",borderRadius:14,fontSize:16,fontWeight:"600",cursor:"pointer",marginTop:16},
   smallBtn:{padding:"8px 16px",background:"#F2F2F7",color:"#007AFF",border:"none",borderRadius:10,fontSize:13,fontWeight:"600",cursor:"pointer"},
+  chipBtn:{padding:"7px 12px",background:"#fff",color:"#3C3C43",border:"1.5px solid #E5E5EA",borderRadius:18,fontSize:13,fontWeight:"500",cursor:"pointer"},
   altRow:{display:"flex",alignItems:"center",gap:8,marginTop:12,flexWrap:"wrap"},
   altBtn:{padding:"6px 12px",background:"#F2F2F7",border:"none",borderRadius:10,fontSize:12,cursor:"pointer",color:"#007AFF",fontWeight:"500"},
   voiceBtn:{padding:"16px 40px",borderRadius:30,border:"none",color:"#fff",fontSize:16,fontWeight:"600",cursor:"pointer"},
@@ -1301,11 +1448,11 @@ function LockGate({ onUnlocked }){
   const info = titles[mode];
   const lockedOut = lockLeft>0;
   return (
-    <div style={S.lockWrap}>
+    <div className="anim-page" style={S.lockWrap}>
       <div style={S.lockIcon}>{lockedOut?"⏳":"🔒"}</div>
       <h1 style={S.lockTitle}>{lockedOut?"已暫時鎖定":info.t}</h1>
       <p style={S.lockSub}>{lockedOut?`嘗試次數過多，請於 ${Math.ceil(lockLeft/1000)} 秒後再試`:info.s}</p>
-      {!lockedOut && <div style={S.pinDots}>{Array.from({length:PIN_LEN}).map((_,i)=>(<div key={i} style={{...S.pinDot,...(i<pin.length?S.pinDotFill:{})}}/>))}</div>}
+      {!lockedOut && <div style={S.pinDots}>{Array.from({length:PIN_LEN}).map((_,i)=>(<div key={i} style={{...S.pinDot,...(i<pin.length?S.pinDotFill:{}),transition:"background 0.15s var(--ease-out), border-color 0.15s ease, transform 0.2s var(--ease-spring)",transform:i<pin.length?"scale(1.25)":"scale(1)"}}/>))}</div>}
       {err && <p style={{color:"#FFD60A",fontSize:14,margin:"0 0 16px",fontWeight:"600"}}>{err}</p>}
       {!lockedOut && (
         <div style={S.pad}>
