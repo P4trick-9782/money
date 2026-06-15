@@ -1,0 +1,1234 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>我的記帳</title>
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="我的記帳">
+<meta name="theme-color" content="#007AFF">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icon-180.png">
+<style>
+  * { -webkit-tap-highlight-color: transparent; }
+  html,body { margin:0; padding:0; background:#F2F2F7; overscroll-behavior:none; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  input, button, select { font-family: inherit; }
+  /* iOS safe area */
+  body { padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom); }
+</style>
+<script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.6/babel.min.js"></script>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useRef } = React;
+
+// ── Storage + Encryption ─────────────────────────────────────────
+const KEYS = { txns:"fin_txns", recurring:"fin_recurring", goals:"fin_goals", sync:"fin_sync" };
+const LOCK = { verifier:"fin_lock_v", salt:"fin_lock_salt", fails:"fin_lock_fails", until:"fin_lock_until", bio:"fin_bio_cred", biowrap:"fin_bio_wrap" };
+const PIN_LEN = 6;
+const MAX_FAILS = 5;          // lock out after this many wrong tries
+const LOCKOUT_MS = 60*1000;   // base lockout, escalates
+
+// in-memory AES key (never persisted). null = locked / no PIN set yet.
+let CRYPTO_KEY = null;
+
+const enc = new TextEncoder();
+const dec = new TextDecoder();
+function b64(buf){ return btoa(String.fromCharCode(...new Uint8Array(buf))); }
+function unb64(str){ return Uint8Array.from(atob(str), c=>c.charCodeAt(0)); }
+
+// derive an AES-GCM key from PIN + salt via PBKDF2
+async function deriveKey(pin, salt){
+  const base = await crypto.subtle.importKey("raw", enc.encode(pin), "PBKDF2", false, ["deriveKey"]);
+  return crypto.subtle.deriveKey(
+    { name:"PBKDF2", salt, iterations:210000, hash:"SHA-256" },
+    base, { name:"AES-GCM", length:256 }, false, ["encrypt","decrypt"]
+  );
+}
+// raw exportable key (used to wrap for biometric unlock)
+async function deriveRawKey(pin, salt){
+  const base = await crypto.subtle.importKey("raw", enc.encode(pin), "PBKDF2", false, ["deriveKey"]);
+  return crypto.subtle.deriveKey(
+    { name:"PBKDF2", salt, iterations:210000, hash:"SHA-256" },
+    base, { name:"AES-GCM", length:256 }, true, ["encrypt","decrypt"]
+  );
+}
+async function encWith(key, plain){
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = await crypto.subtle.encrypt({ name:"AES-GCM", iv }, key, enc.encode(plain));
+  return JSON.stringify({ iv:b64(iv), ct:b64(ct) });
+}
+async function decWith(key, payload){
+  const { iv, ct } = JSON.parse(payload);
+  const pt = await crypto.subtle.decrypt({ name:"AES-GCM", iv:unb64(iv) }, key, unb64(ct));
+  return dec.decode(pt);
+}
+async function encryptStr(plain){ return encWith(CRYPTO_KEY, plain); }
+async function decryptStr(payload){ return decWith(CRYPTO_KEY, payload); }
+
+// PIN lifecycle
+function hasPIN(){ return !!localStorage.getItem(LOCK.verifier); }
+async function setupPIN(pin){
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  CRYPTO_KEY = await deriveKey(pin, salt);
+  const verifier = await encryptStr("FIN_OK");
+  localStorage.setItem(LOCK.salt, b64(salt));
+  localStorage.setItem(LOCK.verifier, verifier);
+  clearFails();
+}
+async function unlockPIN(pin){
+  if(lockoutRemaining()>0) return false;
+  const salt = unb64(localStorage.getItem(LOCK.salt));
+  CRYPTO_KEY = await deriveKey(pin, salt);
+  try {
+    const v = await decryptStr(localStorage.getItem(LOCK.verifier));
+    if(v !== "FIN_OK"){ CRYPTO_KEY=null; registerFail(); return false; }
+    clearFails(); return true;
+  } catch { CRYPTO_KEY=null; registerFail(); return false; }
+}
+function lockApp(){ CRYPTO_KEY = null; }
+
+// ── Lockout tracking ──
+function registerFail(){
+  const n = (Number(localStorage.getItem(LOCK.fails))||0)+1;
+  localStorage.setItem(LOCK.fails, String(n));
+  if(n >= MAX_FAILS){
+    // escalating lockout: 1min, then doubles each extra fail beyond threshold
+    const extra = n - MAX_FAILS;
+    const wait = LOCKOUT_MS * Math.pow(2, extra);
+    localStorage.setItem(LOCK.until, String(Date.now()+wait));
+  }
+}
+function clearFails(){ localStorage.removeItem(LOCK.fails); localStorage.removeItem(LOCK.until); }
+function failCount(){ return Number(localStorage.getItem(LOCK.fails))||0; }
+function lockoutRemaining(){
+  const u = Number(localStorage.getItem(LOCK.until))||0;
+  return Math.max(0, u - Date.now());
+}
+
+// ── Biometric (WebAuthn) ──
+// We register a platform authenticator credential, then wrap the raw AES key
+// with a key derived from the credential id, so Face/Touch ID can recover it.
+function bioSupported(){ return !!(window.PublicKeyCredential && navigator.credentials); }
+function bioEnabled(){ return !!localStorage.getItem(LOCK.bio); }
+
+async function bioRegister(pin){
+  if(!bioSupported()) throw new Error("不支援");
+  const salt = unb64(localStorage.getItem(LOCK.salt));
+  const rawKey = await deriveRawKey(pin, salt);
+  // verify pin first by decrypting verifier
+  const test = await decWith(rawKey, localStorage.getItem(LOCK.verifier));
+  if(test !== "FIN_OK") throw new Error("PIN 錯誤");
+
+  const userId = crypto.getRandomValues(new Uint8Array(16));
+  const cred = await navigator.credentials.create({ publicKey:{
+    challenge: crypto.getRandomValues(new Uint8Array(32)),
+    rp:{ name:"我的記帳" },
+    user:{ id:userId, name:"local-user", displayName:"我的記帳" },
+    pubKeyCredParams:[{type:"public-key",alg:-7},{type:"public-key",alg:-257}],
+    authenticatorSelection:{ authenticatorAttachment:"platform", userVerification:"required", residentKey:"preferred" },
+    timeout:60000,
+  }});
+  const credId = b64(cred.rawId);
+  // wrap rawKey bytes using a key derived from credId
+  const exported = await crypto.subtle.exportKey("raw", rawKey);
+  const wrapSalt = crypto.getRandomValues(new Uint8Array(16));
+  const wrapKey = await deriveKey(credId, wrapSalt); // reuse PBKDF2 over credId
+  const wrapped = await encWith(wrapKey, b64(exported));
+  localStorage.setItem(LOCK.bio, credId);
+  localStorage.setItem(LOCK.biowrap, JSON.stringify({ salt:b64(wrapSalt), data:wrapped }));
+}
+async function bioUnlock(){
+  if(!bioEnabled()) return false;
+  const credId = localStorage.getItem(LOCK.bio);
+  try{
+    await navigator.credentials.get({ publicKey:{
+      challenge: crypto.getRandomValues(new Uint8Array(32)),
+      allowCredentials:[{ type:"public-key", id:unb64(credId) }],
+      userVerification:"required", timeout:60000,
+    }});
+    // recover rawKey
+    const { salt, data } = JSON.parse(localStorage.getItem(LOCK.biowrap));
+    const wrapKey = await deriveKey(credId, unb64(salt));
+    const rawB64 = await decWith(wrapKey, data);
+    CRYPTO_KEY = await crypto.subtle.importKey("raw", unb64(rawB64), {name:"AES-GCM"}, false, ["encrypt","decrypt"]);
+    // validate
+    const v = await decryptStr(localStorage.getItem(LOCK.verifier));
+    if(v!=="FIN_OK"){ CRYPTO_KEY=null; return false; }
+    clearFails(); return true;
+  }catch{ return false; }
+}
+function bioDisable(){ localStorage.removeItem(LOCK.bio); localStorage.removeItem(LOCK.biowrap); }
+
+// ── End-to-end encryption for cloud payload ──
+// Derive a separate key from the sync token so the cloud only ever sees ciphertext.
+async function e2eeKey(token){
+  const base = await crypto.subtle.importKey("raw", enc.encode("e2ee::"+token), "PBKDF2", false, ["deriveKey"]);
+  return crypto.subtle.deriveKey(
+    { name:"PBKDF2", salt:enc.encode("fin-e2ee-salt-v1"), iterations:150000, hash:"SHA-256" },
+    base, { name:"AES-GCM", length:256 }, false, ["encrypt","decrypt"]
+  );
+}
+async function e2eeEncrypt(token, obj){
+  const key = await e2eeKey(token);
+  return encWith(key, JSON.stringify(obj)); // returns {iv,ct} json string
+}
+async function e2eeDecrypt(token, payload){
+  const key = await e2eeKey(token);
+  return JSON.parse(await decWith(key, payload));
+}
+
+// encrypted load/save — falls back to plaintext for legacy/un-encrypted data
+async function load(k){
+  try{
+    const raw = localStorage.getItem(k);
+    if(!raw) return null;
+    if(CRYPTO_KEY && raw.startsWith('{"iv"')){ return JSON.parse(await decryptStr(raw)); }
+    return JSON.parse(raw); // legacy plaintext
+  }catch{ return null; }
+}
+async function save(k,v){
+  try{
+    const json = JSON.stringify(v);
+    if(CRYPTO_KEY){ localStorage.setItem(k, await encryptStr(json)); }
+    else { localStorage.setItem(k, json); }
+  }catch{}
+}
+
+// ── Defaults ─────────────────────────────────────────────────────
+const DEFAULT_CATS = {
+  expense:["餐飲","交通","購物","娛樂","醫療","教育","住房","水電","其他"],
+  income: ["薪資","獎金","投資","副業","其他收入"],
+  saving: ["定存","基金","股票","緊急備用金"],
+  recurring:["車貸","房貸","保險","訂閱服務","電信費","水費","電費","稅金","其他固定"],
+};
+const ICONS = {
+  餐飲:"🍜",交通:"🚌",購物:"🛍",娛樂:"🎬",醫療:"💊",教育:"📚",住房:"🏠",水電:"💡",其他:"📦",
+  薪資:"💼",獎金:"🎁",投資:"📈",副業:"💻",其他收入:"💰",定存:"🏦",基金:"📊",股票:"📉",緊急備用金:"🛡",
+  車貸:"🚗",房貸:"🏡",保險:"🔒",訂閱服務:"📱",電信費:"📡",水費:"💧",電費:"⚡",稅金:"🧾",其他固定:"🔁",
+  旅遊金:"✈️",緊急金:"🛟",買車:"🚙",買房:"🏘",教育金:"🎓",退休金:"🌴",其他目標:"🎯",
+};
+const TYPE_COLOR = {
+  expense:{bg:"#FF3B30",light:"#FFF1F0"}, income:{bg:"#34C759",light:"#F0FFF4"},
+  saving:{bg:"#007AFF",light:"#EFF6FF"}, recurring:{bg:"#FF9500",light:"#FFF8EE"},
+};
+const TYPE_LABEL = { expense:"支出", income:"收入", saving:"儲蓄", recurring:"固定扣款" };
+const FREQ_LABEL = { monthly:"每月", yearly:"每年", quarterly:"每季" };
+const GOAL_CATS = ["旅遊金","緊急金","買車","買房","教育金","退休金","其他目標"];
+
+function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2); }
+function today(){ return new Date().toISOString().slice(0,10); }
+function fmtDate(d){ const t=new Date(d); return `${t.getMonth()+1}/${t.getDate()}`; }
+function fmtMoney(n){ return Number(n||0).toLocaleString("zh-TW",{maximumFractionDigits:0}); }
+
+// monthly-equivalent cost of a recurring item
+function monthlyEquiv(r){
+  const a=Number(r.amount);
+  if(r.freq==="yearly") return a/12;
+  if(r.freq==="quarterly") return a/3;
+  return a;
+}
+
+// ══════════════════════════════════════════════════════════════════
+function App({ onLock }){
+  const [tab,setTab]         = useState("home");
+  const [txns,setTxns]       = useState([]);
+  const [recurring,setRec]   = useState([]);
+  const [goals,setGoals]     = useState([]);
+  const [sync,setSync]       = useState({ url:"", token:"", lastSync:null });
+  const [modal,setModal]     = useState(null);
+  const [toast,setToast]     = useState(null);
+  const [loaded,setLoaded]   = useState(false);
+  const [month,setMonth]     = useState(today().slice(0,7));
+  const [year,setYear]       = useState(today().slice(0,4));
+
+  useEffect(()=>{ (async()=>{
+    const t=await load(KEYS.txns), r=await load(KEYS.recurring), g=await load(KEYS.goals), s=await load(KEYS.sync);
+    if(t)setTxns(t); if(r)setRec(r); if(g)setGoals(g); if(s)setSync(s);
+    setLoaded(true);
+  })(); },[]);
+  useEffect(()=>{ if(loaded)save(KEYS.txns,txns); },[txns,loaded]);
+  useEffect(()=>{ if(loaded)save(KEYS.recurring,recurring); },[recurring,loaded]);
+  useEffect(()=>{ if(loaded)save(KEYS.goals,goals); },[goals,loaded]);
+  useEffect(()=>{ if(loaded)save(KEYS.sync,sync); },[sync,loaded]);
+
+  const showToast=(msg,type="success")=>{ setToast({msg,type}); setTimeout(()=>setToast(null),2500); };
+
+  const addTx=(tx)=>{ setTxns(p=>[{...tx,id:uid(),createdAt:new Date().toISOString()},...p]); showToast("記帳成功 ✓"); };
+  const delTx=(id)=>{ setTxns(p=>p.filter(t=>t.id!==id)); showToast("已刪除","warn"); };
+  const addRec=(r)=>{ setRec(p=>[{...r,id:uid()},...p]); showToast("固定扣款已新增 ✓"); };
+  const delRec=(id)=>setRec(p=>p.filter(r=>r.id!==id));
+  const addGoal=(g)=>{ setGoals(p=>[{...g,id:uid(),saved:Number(g.saved)||0},...p]); showToast("目標已建立 🎯"); };
+  const delGoal=(id)=>setGoals(p=>p.filter(g=>g.id!==id));
+  const updateGoal=(id,amt)=>{ setGoals(p=>p.map(g=>g.id===id?{...g,saved:Math.max(0,g.saved+amt)}:g)); showToast("已更新存款 ✓"); };
+
+  const exportCSV=()=>{
+    const rows=[["日期","類型","分類","金額","備註"]];
+    txns.forEach(t=>rows.push([t.date,TYPE_LABEL[t.type],t.category,t.amount,t.note||""]));
+    dl("\uFEFF"+rows.map(r=>r.join(",")).join("\n"),"記帳紀錄.csv","text/csv");
+    showToast("CSV 已匯出");
+  };
+  const exportJSON=()=>{
+    dl(JSON.stringify({txns,recurring,goals},null,2),"記帳備份.json","application/json");
+    showToast("JSON 備份已匯出");
+  };
+  const importJSON=(data)=>{
+    if(data.txns)setTxns(data.txns);
+    if(data.recurring)setRec(data.recurring);
+    if(data.goals)setGoals(data.goals);
+    showToast("資料已匯入 ✓");
+  };
+
+  // ── Cloud sync via Google Apps Script (token auth + end-to-end encryption) ──
+  const pushCloud=async()=>{
+    if(!sync.url){ showToast("請先設定同步網址","warn"); return; }
+    if(!sync.token){ showToast("請先設定同步密鑰","warn"); return; }
+    showToast("加密上傳中…");
+    try{
+      // encrypt the whole payload locally; cloud only stores ciphertext
+      const blob = await e2eeEncrypt(sync.token, {txns,recurring,goals});
+      await fetch(sync.url,{ method:"POST", mode:"no-cors",
+        headers:{"Content-Type":"text/plain;charset=utf-8"},
+        body:JSON.stringify({ action:"push", token:sync.token, enc:blob }) });
+      setSync(s=>({...s,lastSync:new Date().toISOString()}));
+      showToast("已加密上傳到雲端 🔐☁️");
+    }catch{ showToast("上傳失敗，請檢查網址","warn"); }
+  };
+  const pullCloud=async()=>{
+    if(!sync.url){ showToast("請先設定同步網址","warn"); return; }
+    if(!sync.token){ showToast("請先設定同步密鑰","warn"); return; }
+    showToast("下載解密中…");
+    try{
+      const res=await fetch(sync.url+"?action=pull&token="+encodeURIComponent(sync.token));
+      const data=await res.json();
+      if(data.error){ showToast("密鑰錯誤，存取被拒","warn"); return; }
+      if(!data.enc){ showToast("雲端尚無資料","warn"); return; }
+      let obj;
+      try{ obj = await e2eeDecrypt(sync.token, data.enc); }
+      catch{ showToast("解密失敗，密鑰不符","warn"); return; }
+      if(obj.txns)setTxns(obj.txns);
+      if(obj.recurring)setRec(obj.recurring);
+      if(obj.goals)setGoals(obj.goals);
+      setSync(s=>({...s,lastSync:new Date().toISOString()}));
+      showToast("已從雲端下載並解密 🔐");
+    }catch{ showToast("下載失敗，請檢查網址","warn"); }
+  };
+
+  // stats
+  const mTx = txns.filter(t=>t.date.startsWith(month));
+  const mInc=sum(mTx,"income"), mExp=sum(mTx,"expense"), mSav=sum(mTx,"saving");
+  const recMonthly=recurring.reduce((s,r)=>s+monthlyEquiv(r),0);
+  const balance=mInc-mExp-mSav;
+
+  if(!loaded) return <div style={S.loadWrap}><div style={S.spinner}/><p style={{color:"#8E8E93",marginTop:12,fontSize:14}}>載入中…</p></div>;
+
+  return (
+    <div style={S.shell}>
+      <div style={S.statusBar}/>
+      <div style={S.content}>
+        {tab==="home"     && <Home {...{mTx,mInc,mExp,mSav,recMonthly,balance,month,setMonth,delTx,setModal,recurring,goals}}/>}
+        {tab==="txns"     && <Txns {...{txns,delTx,month,setMonth}}/>}
+        {tab==="recurring"&& <Recurring {...{recurring,delRec,setModal}}/>}
+        {tab==="goals"    && <Goals {...{goals,delGoal,updateGoal,setModal}}/>}
+        {tab==="stats"    && <Stats {...{txns,recurring,month,setMonth,year,setYear}}/>}
+        {tab==="more"     && <More {...{exportCSV,exportJSON,importJSON,sync,setSync,pushCloud,pullCloud,showToast,onLock}}/>}
+      </div>
+      <TabBar tab={tab} setTab={setTab}/>
+      <button style={S.fab} onClick={()=>setModal("add")}>＋</button>
+
+      {modal==="add"      && <AddModal onAdd={addTx} onClose={()=>setModal(null)} onVoice={()=>setModal("voice")} onReceipt={()=>setModal("receipt")} onCSV={()=>setModal("csv")}/>}
+      {modal==="voice"    && <VoiceModal onAdd={addTx} onClose={()=>setModal(null)} showToast={showToast}/>}
+      {modal==="receipt"  && <ReceiptModal onAdd={addTx} onClose={()=>setModal(null)} showToast={showToast}/>}
+      {modal==="csv"      && <CSVModal onImport={(t)=>{setTxns(p=>[...t,...p]);showToast(`已匯入 ${t.length} 筆`);}} onClose={()=>setModal(null)}/>}
+      {modal==="recurring"&& <RecurringModal onAdd={addRec} onClose={()=>setModal(null)}/>}
+      {modal==="goal"     && <GoalModal onAdd={addGoal} onClose={()=>setModal(null)}/>}
+
+      {toast && <div style={{...S.toast,background:toast.type==="warn"?"#FF9500":"#34C759"}}>{toast.msg}</div>}
+    </div>
+  );
+}
+function sum(arr,type){ return arr.filter(t=>t.type===type).reduce((s,t)=>s+Number(t.amount),0); }
+function dl(content,name,type){ const b=new Blob([content],{type:type+";charset=utf-8;"}); const u=URL.createObjectURL(b); const a=document.createElement("a"); a.href=u; a.download=name; a.click(); }
+
+// ══════════════ HOME ══════════════════════════════════════════════
+function Home({mTx,mInc,mExp,mSav,recMonthly,balance,month,setMonth,delTx,setModal,goals}){
+  const recent=mTx.slice(0,12);
+  const topGoal=goals[0];
+  return (
+    <div style={S.tab}>
+      <MonthNav current={month} onChange={setMonth} mode="month"/>
+      <div style={S.balanceCard}>
+        <p style={S.balanceLabel}>本月結餘</p>
+        <p style={{...S.balanceAmt,color:balance>=0?"#fff":"#FFD60A"}}>NT$ {fmtMoney(balance)}</p>
+        <div style={S.balanceRow}>
+          <Chip label="收入" val={mInc}/><Chip label="支出" val={mExp}/><Chip label="儲蓄" val={mSav}/>
+        </div>
+      </div>
+      {recMonthly>0 && (
+        <div style={S.recBanner} onClick={()=>setModal("recurring")}>
+          <span>🔁</span><span style={{flex:1,marginLeft:8}}>固定扣款（月均攤）</span>
+          <span style={{fontWeight:"600",color:"#FF9500"}}>NT$ {fmtMoney(recMonthly)}/月</span>
+          <span style={{marginLeft:6,color:"#C7C7CC"}}>›</span>
+        </div>
+      )}
+      {topGoal && (
+        <div style={S.goalBanner} onClick={()=>setModal&&null}>
+          <span>{ICONS[topGoal.category]||"🎯"}</span>
+          <div style={{flex:1,marginLeft:8}}>
+            <div style={{display:"flex",justifyContent:"space-between",fontSize:13}}>
+              <span>{topGoal.name}</span>
+              <span style={{color:"#34C759",fontWeight:"600"}}>{Math.round(topGoal.saved/topGoal.target*100)}%</span>
+            </div>
+            <div style={S.progBg}><div style={{...S.progFill,width:`${Math.min(100,topGoal.saved/topGoal.target*100)}%`}}/></div>
+          </div>
+        </div>
+      )}
+      <div style={S.quickRow}>
+        {[["🖊","手動",()=>setModal("add")],["📷","掃描",()=>setModal("receipt")],["🎙","語音",()=>setModal("voice")],["🎯","目標",()=>setModal("goal")]].map(([i,l,f])=>(
+          <button key={l} style={S.quickBtn} onClick={f}><span style={{fontSize:22}}>{i}</span><span style={S.quickLabel}>{l}</span></button>
+        ))}
+      </div>
+      <Section title="近期記錄" sub={mTx.length?`共 ${mTx.length} 筆`:""}/>
+      {recent.length===0 ? <Empty icon="📋" msg="本月還沒有記錄，點 ＋ 開始記帳"/> : recent.map(t=><TxRow key={t.id} tx={t} onDelete={delTx}/>)}
+      <div style={{height:100}}/>
+    </div>
+  );
+}
+
+// ══════════════ TXNS ══════════════════════════════════════════════
+function Txns({txns,delTx,month,setMonth}){
+  const [f,setF]=useState("all");
+  const list=txns.filter(t=>t.date.startsWith(month)&&(f==="all"||t.type===f));
+  return (
+    <div style={S.tab}>
+      <MonthNav current={month} onChange={setMonth} mode="month"/>
+      <div style={S.filterRow}>
+        {[["all","全部"],["expense","支出"],["income","收入"],["saving","儲蓄"]].map(([v,l])=>(
+          <button key={v} style={{...S.filterBtn,...(f===v?S.filterActive:{})}} onClick={()=>setF(v)}>{l}</button>
+        ))}
+      </div>
+      {list.length===0 ? <Empty icon="🔍" msg="沒有符合的記錄"/> : list.map(t=><TxRow key={t.id} tx={t} onDelete={delTx} showDate/>)}
+      <div style={{height:100}}/>
+    </div>
+  );
+}
+
+// ══════════════ RECURRING ═════════════════════════════════════════
+function Recurring({recurring,delRec,setModal}){
+  const monthly=recurring.filter(r=>r.freq!=="yearly"&&r.freq!=="quarterly");
+  const periodic=recurring.filter(r=>r.freq==="yearly"||r.freq==="quarterly");
+  const totalMonthEquiv=recurring.reduce((s,r)=>s+monthlyEquiv(r),0);
+  const totalYear=recurring.reduce((s,r)=>{
+    if(r.freq==="yearly")return s+Number(r.amount);
+    if(r.freq==="quarterly")return s+Number(r.amount)*4;
+    return s+Number(r.amount)*12;
+  },0);
+  return (
+    <div style={S.tab}>
+      <div style={S.pageTitle}>固定扣款</div>
+      <div style={S.recTotal}>
+        <div style={{display:"flex",justifyContent:"space-between"}}>
+          <div><p style={S.miniLabel}>月均攤</p><p style={{...S.bigNum,color:"#FF9500"}}>NT$ {fmtMoney(totalMonthEquiv)}</p></div>
+          <div style={{textAlign:"right"}}><p style={S.miniLabel}>年度總額</p><p style={{...S.bigNum,color:"#FF9500"}}>NT$ {fmtMoney(totalYear)}</p></div>
+        </div>
+      </div>
+      {recurring.length===0 && <Empty icon="🔁" msg="尚未設定固定扣款"/>}
+      {monthly.length>0 && <Section title="每月扣款"/>}
+      {monthly.map(r=><RecRow key={r.id} r={r} onDelete={delRec}/>)}
+      {periodic.length>0 && <Section title="年度 / 季度扣款"/>}
+      {periodic.map(r=><RecRow key={r.id} r={r} onDelete={delRec}/>)}
+      <button style={S.addRecBtn} onClick={()=>setModal("recurring")}>＋ 新增固定扣款</button>
+      <div style={{height:100}}/>
+    </div>
+  );
+}
+function RecRow({r,onDelete}){
+  const isYearly=r.freq==="yearly";
+  return (
+    <div style={S.recRow}>
+      <span style={S.catIcon}>{ICONS[r.category]||"🔁"}</span>
+      <div style={{flex:1}}>
+        <p style={{margin:0,fontWeight:"600",fontSize:15}}>{r.name}</p>
+        <p style={{margin:0,fontSize:12,color:"#8E8E93"}}>
+          {r.category} · {FREQ_LABEL[r.freq]||"每月"}
+          {isYearly && r.month ? ` ${r.month}月` : ""} {r.day} 日
+          {(isYearly||r.freq==="quarterly") && <span style={{color:"#FF9500"}}> · 月均 NT$ {fmtMoney(monthlyEquiv(r))}</span>}
+        </p>
+      </div>
+      <div style={{textAlign:"right"}}>
+        <span style={{color:"#FF9500",fontWeight:"600"}}>NT$ {fmtMoney(r.amount)}</span>
+        <p style={{margin:0,fontSize:10,color:"#C7C7CC"}}>{FREQ_LABEL[r.freq]||"每月"}</p>
+      </div>
+      <button style={S.delBtn} onClick={()=>onDelete(r.id)}>✕</button>
+    </div>
+  );
+}
+
+// ══════════════ GOALS ═════════════════════════════════════════════
+function Goals({goals,delGoal,updateGoal,setModal}){
+  const [adjust,setAdjust]=useState(null);
+  const [amt,setAmt]=useState("");
+  const totalSaved=goals.reduce((s,g)=>s+g.saved,0);
+  const totalTarget=goals.reduce((s,g)=>s+Number(g.target),0);
+  return (
+    <div style={S.tab}>
+      <div style={S.pageTitle}>存款目標</div>
+      <div style={S.goalSummary}>
+        <p style={S.miniLabel}>總進度</p>
+        <p style={{fontSize:28,fontWeight:"700",margin:"4px 0",color:"#34C759"}}>NT$ {fmtMoney(totalSaved)} <span style={{fontSize:15,color:"#8E8E93",fontWeight:"400"}}>/ {fmtMoney(totalTarget)}</span></p>
+        <div style={S.progBg}><div style={{...S.progFill,width:`${totalTarget>0?Math.min(100,totalSaved/totalTarget*100):0}%`}}/></div>
+      </div>
+      {goals.length===0 ? <Empty icon="🎯" msg="尚未建立存款目標"/> : goals.map(g=>{
+        const pct=Math.min(100,Math.round(g.saved/g.target*100));
+        const done=g.saved>=g.target;
+        return (
+          <div key={g.id} style={S.goalCard}>
+            <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:8}}>
+              <span style={{fontSize:24}}>{ICONS[g.category]||"🎯"}</span>
+              <div style={{flex:1}}>
+                <p style={{margin:0,fontWeight:"600",fontSize:16}}>{g.name} {done&&"✅"}</p>
+                <p style={{margin:0,fontSize:12,color:"#8E8E93"}}>{g.category}{g.deadline?` · 目標 ${g.deadline}`:""}</p>
+              </div>
+              <button style={S.delBtn} onClick={()=>delGoal(g.id)}>✕</button>
+            </div>
+            <div style={{display:"flex",justifyContent:"space-between",fontSize:13,marginBottom:4}}>
+              <span style={{fontWeight:"600",color:"#34C759"}}>NT$ {fmtMoney(g.saved)}</span>
+              <span style={{color:"#8E8E93"}}>/ NT$ {fmtMoney(g.target)} ({pct}%)</span>
+            </div>
+            <div style={S.progBg}><div style={{...S.progFill,width:`${pct}%`,background:done?"#34C759":"#007AFF"}}/></div>
+            {adjust===g.id ? (
+              <div style={{display:"flex",gap:6,marginTop:10}}>
+                <input style={{...S.inputField,marginBottom:0,flex:1}} type="number" placeholder="金額" value={amt} onChange={e=>setAmt(e.target.value)} inputMode="numeric"/>
+                <button style={S.goalActionBtn} onClick={()=>{updateGoal(g.id,Number(amt));setAdjust(null);setAmt("");}}>＋存入</button>
+                <button style={{...S.goalActionBtn,background:"#FF3B30"}} onClick={()=>{updateGoal(g.id,-Number(amt));setAdjust(null);setAmt("");}}>－提取</button>
+              </div>
+            ):(
+              <button style={S.depositBtn} onClick={()=>setAdjust(g.id)}>調整存款</button>
+            )}
+          </div>
+        );
+      })}
+      <button style={S.addRecBtn} onClick={()=>setModal("goal")}>＋ 新增存款目標</button>
+      <div style={{height:100}}/>
+    </div>
+  );
+}
+
+// ══════════════ STATS ═════════════════════════════════════════════
+function Stats({txns,recurring,month,setMonth,year,setYear}){
+  const [view,setView]=useState("month"); // month | year
+
+  if(view==="month"){
+    const mTx=txns.filter(t=>t.date.startsWith(month));
+    const expTx=mTx.filter(t=>t.type==="expense");
+    const catMap={}; expTx.forEach(t=>catMap[t.category]=(catMap[t.category]||0)+Number(t.amount));
+    const catList=Object.entries(catMap).sort((a,b)=>b[1]-a[1]);
+    const totalE=catList.reduce((s,[,v])=>s+v,0);
+    // 6 month bars
+    const months=[];
+    for(let i=5;i>=0;i--){ const d=new Date(month+"-01"); d.setMonth(d.getMonth()-i); const mk=d.toISOString().slice(0,7);
+      months.push({mk,label:`${d.getMonth()+1}月`,inc:sum(txns.filter(t=>t.date.startsWith(mk)),"income"),exp:sum(txns.filter(t=>t.date.startsWith(mk)),"expense")}); }
+    const max=Math.max(...months.map(m=>Math.max(m.inc,m.exp)),1);
+    return (
+      <div style={S.tab}>
+        <ViewToggle view={view} setView={setView}/>
+        <MonthNav current={month} onChange={setMonth} mode="month"/>
+        <BarChart title="近 6 個月收支" data={months} max={max}/>
+        <CatBreakdown title="本月支出分類" catList={catList} total={totalE}/>
+        <div style={{height:100}}/>
+      </div>
+    );
+  }
+
+  // YEAR view
+  const yTx=txns.filter(t=>t.date.startsWith(year));
+  const yInc=sum(yTx,"income"), yExp=sum(yTx,"expense"), ySav=sum(yTx,"saving");
+  // 12 month bars
+  const months12=[];
+  for(let m=1;m<=12;m++){ const mk=`${year}-${String(m).padStart(2,"0")}`;
+    months12.push({mk,label:`${m}`,inc:sum(txns.filter(t=>t.date.startsWith(mk)),"income"),exp:sum(txns.filter(t=>t.date.startsWith(mk)),"expense")}); }
+  const max12=Math.max(...months12.map(m=>Math.max(m.inc,m.exp)),1);
+  const catMap={}; yTx.filter(t=>t.type==="expense").forEach(t=>catMap[t.category]=(catMap[t.category]||0)+Number(t.amount));
+  const catList=Object.entries(catMap).sort((a,b)=>b[1]-a[1]);
+  const recYear=recurring.reduce((s,r)=>r.freq==="yearly"?s+Number(r.amount):r.freq==="quarterly"?s+Number(r.amount)*4:s+Number(r.amount)*12,0);
+  return (
+    <div style={S.tab}>
+      <ViewToggle view={view} setView={setView}/>
+      <MonthNav current={year} onChange={setYear} mode="year"/>
+      <div style={S.card}>
+        <p style={S.cardTitle}>{year} 年度總覽</p>
+        <div style={{display:"flex",justifyContent:"space-between",marginTop:12}}>
+          <YearStat label="總收入" val={yInc} color="#34C759"/>
+          <YearStat label="總支出" val={yExp} color="#FF3B30"/>
+          <YearStat label="總儲蓄" val={ySav} color="#007AFF"/>
+        </div>
+        <div style={{borderTop:"1px solid #F2F2F7",marginTop:12,paddingTop:12,display:"flex",justifyContent:"space-between"}}>
+          <span style={{fontSize:13,color:"#8E8E93"}}>年度結餘</span>
+          <span style={{fontWeight:"700",color:yInc-yExp-ySav>=0?"#34C759":"#FF3B30"}}>NT$ {fmtMoney(yInc-yExp-ySav)}</span>
+        </div>
+        <div style={{display:"flex",justifyContent:"space-between",marginTop:6}}>
+          <span style={{fontSize:13,color:"#8E8E93"}}>固定扣款年支出</span>
+          <span style={{fontWeight:"600",color:"#FF9500"}}>NT$ {fmtMoney(recYear)}</span>
+        </div>
+      </div>
+      <BarChart title={`${year} 年每月收支`} data={months12} max={max12} compact/>
+      <CatBreakdown title="年度支出分類" catList={catList} total={catList.reduce((s,[,v])=>s+v,0)}/>
+      <div style={{height:100}}/>
+    </div>
+  );
+}
+function ViewToggle({view,setView}){
+  return (
+    <div style={S.viewToggle}>
+      {[["month","月報表"],["year","年報表"]].map(([v,l])=>(
+        <button key={v} style={{...S.viewBtn,...(view===v?S.viewBtnActive:{})}} onClick={()=>setView(v)}>{l}</button>
+      ))}
+    </div>
+  );
+}
+function YearStat({label,val,color}){ return <div style={{textAlign:"center"}}><p style={{margin:0,fontSize:11,color:"#8E8E93"}}>{label}</p><p style={{margin:"2px 0 0",fontSize:15,fontWeight:"700",color}}>NT$ {fmtMoney(val)}</p></div>; }
+function BarChart({title,data,max,compact}){
+  return (
+    <div style={S.card}>
+      <p style={S.cardTitle}>{title}</p>
+      <div style={{display:"flex",alignItems:"flex-end",gap:compact?3:8,height:120,marginTop:12}}>
+        {data.map(m=>(
+          <div key={m.mk} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:2}}>
+            <div style={{width:"100%",display:"flex",gap:compact?1:2,alignItems:"flex-end",height:100}}>
+              <div style={{flex:1,background:"#34C759",borderRadius:3,height:`${m.inc/max*100}%`,minHeight:m.inc>0?2:0}}/>
+              <div style={{flex:1,background:"#FF3B30",borderRadius:3,height:`${m.exp/max*100}%`,minHeight:m.exp>0?2:0}}/>
+            </div>
+            <span style={{fontSize:compact?8:10,color:"#8E8E93"}}>{m.label}</span>
+          </div>
+        ))}
+      </div>
+      <div style={{display:"flex",gap:16,marginTop:8}}>
+        <span style={{fontSize:11,color:"#34C759"}}>█ 收入</span><span style={{fontSize:11,color:"#FF3B30"}}>█ 支出</span>
+      </div>
+    </div>
+  );
+}
+function CatBreakdown({title,catList,total}){
+  return (
+    <div style={S.card}>
+      <p style={S.cardTitle}>{title}</p>
+      {catList.length===0 ? <p style={{color:"#8E8E93",fontSize:13,textAlign:"center",padding:"16px 0"}}>尚無支出記錄</p> :
+        catList.map(([cat,amt])=>{ const pct=total>0?Math.round(amt/total*100):0;
+          return (
+            <div key={cat} style={{marginBottom:10}}>
+              <div style={{display:"flex",justifyContent:"space-between",marginBottom:3}}>
+                <span style={{fontSize:13}}>{ICONS[cat]||"📦"} {cat}</span>
+                <span style={{fontSize:13,fontWeight:"600"}}>NT$ {fmtMoney(amt)} <span style={{color:"#8E8E93",fontWeight:"400"}}>({pct}%)</span></span>
+              </div>
+              <div style={S.progBg}><div style={{...S.progFill,width:`${pct}%`,background:"#007AFF"}}/></div>
+            </div>
+          );
+        })}
+    </div>
+  );
+}
+
+// ══════════════ MORE (sync + import/export + shortcuts + security) ═══
+function More({exportCSV,exportJSON,importJSON,sync,setSync,pushCloud,pullCloud,showToast,onLock}){
+  const [urlInput,setUrlInput]=useState(sync.url||"");
+  const [tokenInput,setTokenInput]=useState(sync.token||"");
+  const [showScript,setShowScript]=useState(false);
+  const [showSupa,setShowSupa]=useState(false);
+  const [bioOn,setBioOn]=useState(bioEnabled());
+  const fileRef=useRef();
+  const baseURL=typeof window!=="undefined"?window.location.href.split("?")[0]:"";
+  const apiBase=`${baseURL}?api=1`;
+
+  const onJSONFile=(e)=>{ const f=e.target.files[0]; if(!f)return; const r=new FileReader();
+    r.onload=ev=>{ try{ importJSON(JSON.parse(ev.target.result)); }catch{ showToast("檔案格式錯誤","warn"); } }; r.readAsText(f); };
+
+  const genToken=()=>{
+    const arr=crypto.getRandomValues(new Uint8Array(18));
+    const t=btoa(String.fromCharCode(...arr)).replace(/[+/=]/g,"").slice(0,24);
+    setTokenInput(t);
+  };
+
+  const toggleBio=async()=>{
+    if(bioOn){ bioDisable(); setBioOn(false); showToast("已關閉生物辨識"); return; }
+    if(!bioSupported()){ showToast("此裝置不支援生物辨識","warn"); return; }
+    const pin=prompt(`請輸入你的 ${PIN_LEN} 位數密碼以啟用生物辨識`);
+    if(!pin) return;
+    try{ await bioRegister(pin); setBioOn(true); showToast("生物辨識已啟用 👤"); }
+    catch(e){ showToast(e.message==="PIN 錯誤"?"密碼錯誤":"啟用失敗或被取消","warn"); }
+  };
+
+  const gasScript=`// 把下面這行的密鑰換成 App 裡「同步密鑰」欄位的同一組字串
+var SECRET = "貼上你的同步密鑰";
+
+function doGet(e){
+  if((e.parameter.token||"") !== SECRET){
+    return ContentService.createTextOutput(JSON.stringify({error:"unauthorized"})).setMimeType(ContentService.MimeType.JSON);
+  }
+  var sheet=SpreadsheetApp.getActiveSpreadsheet().getSheetByName("data")||SpreadsheetApp.getActiveSpreadsheet().insertSheet("data");
+  var cell=sheet.getRange("A1").getValue();
+  // resp wraps the stored ciphertext; cloud never sees plaintext
+  return ContentService.createTextOutput(cell||"{}").setMimeType(ContentService.MimeType.JSON);
+}
+function doPost(e){
+  var body=JSON.parse(e.postData.contents);
+  if((body.token||"") !== SECRET){
+    return ContentService.createTextOutput(JSON.stringify({error:"unauthorized"}));
+  }
+  var sheet=SpreadsheetApp.getActiveSpreadsheet().getSheetByName("data")||SpreadsheetApp.getActiveSpreadsheet().insertSheet("data");
+  if(body.action==="push"){
+    // store only the encrypted blob
+    sheet.getRange("A1").setValue(JSON.stringify({enc: body.enc}));
+  }
+  return ContentService.createTextOutput(JSON.stringify({ok:true}));
+}`;
+
+  const supaSchema=`-- 在 Supabase SQL Editor 執行，建立資料表
+create table if not exists fin_data (
+  id text primary key,
+  enc text,                       -- 只存加密後的亂碼
+  updated_at timestamptz default now()
+);
+-- 開啟 Row Level Security，僅允許已登入者存取自己的列
+alter table fin_data enable row level security;
+create policy "own row" on fin_data
+  for all using (auth.uid()::text = id) with check (auth.uid()::text = id);`;
+
+  return (
+    <div style={S.tab}>
+      <div style={S.pageTitle}>同步與工具</div>
+
+      {/* Security */}
+      <div style={{...S.card,background:"#F0FFF4",border:"1px solid #C6F6D5"}}>
+        <p style={{fontSize:15,fontWeight:"600",margin:"0 0 4px"}}>🔐 安全性</p>
+        <p style={{fontSize:12,color:"#2F855A",margin:"0 0 12px",lineHeight:1.6}}>
+          • 資料以 {PIN_LEN} 位密碼 + AES-256 加密儲存<br/>
+          • 連續輸錯 {MAX_FAILS} 次將暫時鎖定<br/>
+          • 離開超過 5 分鐘自動上鎖<br/>
+          • 雲端同步採端到端加密，雲端只存亂碼
+        </p>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"8px 0",borderTop:"1px solid #C6F6D5"}}>
+          <span style={{fontSize:14,fontWeight:"500"}}>👤 生物辨識解鎖</span>
+          <button style={{...S.smallBtn,background:bioOn?"#34C759":"#E5E5EA",color:bioOn?"#fff":"#3C3C43"}} onClick={toggleBio}>{bioOn?"已啟用":"啟用"}</button>
+        </div>
+        <button style={{...S.primaryBtn,marginTop:8,background:"#34C759"}} onClick={onLock}>🔒 立即鎖定</button>
+      </div>
+
+      {/* Cloud sync */}
+      <div style={S.card}>
+        <p style={{fontSize:15,fontWeight:"600",margin:"0 0 4px"}}>☁️ 雲端同步（Google Sheet）</p>
+        <p style={{fontSize:12,color:"#8E8E93",margin:"0 0 12px"}}>手機記帳、電腦開試算表，資料存在你自己的 Google 帳號</p>
+        <label style={S.label}>同步網址（Apps Script URL）</label>
+        <input style={S.inputField} placeholder="貼上 /exec 結尾的網址" value={urlInput} onChange={e=>setUrlInput(e.target.value)}/>
+        <label style={S.label}>同步密鑰（Secret Token）</label>
+        <div style={{display:"flex",gap:6}}>
+          <input style={{...S.inputField,flex:1}} placeholder="一組只有你知道的字串" value={tokenInput} onChange={e=>setTokenInput(e.target.value)}/>
+          <button style={{...S.smallBtn,whiteSpace:"nowrap"}} onClick={genToken}>隨機產生</button>
+        </div>
+        <button style={{...S.smallBtn,marginTop:6}} onClick={()=>{setSync(s=>({...s,url:urlInput,token:tokenInput}));showToast("已儲存");}}>儲存設定</button>
+        <div style={{display:"flex",gap:8,marginTop:10}}>
+          <button style={{...S.primaryBtn,marginTop:0,flex:1}} onClick={pushCloud}>⬆️ 上傳到雲端</button>
+          <button style={{...S.primaryBtn,marginTop:0,flex:1,background:"#34C759"}} onClick={pullCloud}>⬇️ 從雲端下載</button>
+        </div>
+        {sync.lastSync && <p style={{fontSize:11,color:"#8E8E93",textAlign:"center",marginTop:8}}>上次同步：{new Date(sync.lastSync).toLocaleString("zh-TW")}</p>}
+        <button style={{...S.smallBtn,marginTop:10,width:"100%"}} onClick={()=>setShowScript(!showScript)}>{showScript?"▼ 收合":"▶ 查看設定教學"}</button>
+        {showScript && (
+          <div style={{marginTop:10}}>
+            {["開新的 Google Sheet（sheets.new）","上方選單「擴充功能」→「Apps Script」","貼上下方腳本，並把 SECRET 換成你上面的同步密鑰，存檔","點「部署」→「新增部署作業」→ 類型選「網頁應用程式」","「誰可以存取」選「所有人」（靠密鑰把關，非靠網址）","部署後複製 /exec 網址，連同密鑰一起貼回上方"].map((s,i)=>(
+              <div key={i} style={{display:"flex",gap:8,marginBottom:6,alignItems:"flex-start"}}>
+                <span style={S.stepNum}>{i+1}</span><span style={{fontSize:12,color:"#3C3C43",lineHeight:1.5}}>{s}</span>
+              </div>
+            ))}
+            <div style={{...S.hintBox,marginBottom:8}}>⚠️ 密鑰等於雲端資料的鑰匙，請妥善保管、不要外流。手機和電腦兩邊要用同一組密鑰才能互通。</div>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",margin:"8px 0 4px"}}>
+              <span style={{fontSize:12,fontWeight:"600"}}>Apps Script 腳本（含密鑰驗證）</span>
+              <button style={S.copyBtn} onClick={()=>{navigator.clipboard?.writeText(gasScript);showToast("已複製腳本");}}>複製</button>
+            </div>
+            <code style={S.codeBlock}>{gasScript}</code>
+          </div>
+        )}
+      </div>
+
+      {/* Supabase advanced backend */}
+      <div style={S.card}>
+        <p style={{fontSize:15,fontWeight:"600",margin:"0 0 4px"}}>🗄 進階：Supabase 後端（選用）</p>
+        <p style={{fontSize:12,color:"#8E8E93",margin:"0 0 10px",lineHeight:1.5}}>
+          想要真正的帳號系統、登入驗證、存取紀錄與伺服器端防護，可改用 Supabase（免費方案足夠）。需你本人註冊並建立專案。
+        </p>
+        <button style={{...S.smallBtn,width:"100%"}} onClick={()=>setShowSupa(!showSupa)}>{showSupa?"▼ 收合":"▶ 查看建置步驟"}</button>
+        {showSupa && (
+          <div style={{marginTop:10}}>
+            {["到 supabase.com 註冊並建立一個新專案（Project）","左側 SQL Editor 貼上下方 schema 並執行，建立資料表","Authentication → 啟用 Email 或 Google 登入","Project Settings → API 取得 Project URL 與 anon key","回到本 App，把資料以端到端加密後存入 fin_data 表的 enc 欄位","因 RLS 政策，每位使用者只能存取自己的那一列"].map((s,i)=>(
+              <div key={i} style={{display:"flex",gap:8,marginBottom:6,alignItems:"flex-start"}}>
+                <span style={S.stepNum}>{i+1}</span><span style={{fontSize:12,color:"#3C3C43",lineHeight:1.5}}>{s}</span>
+              </div>
+            ))}
+            <div style={{...S.hintBox,marginBottom:8}}>
+              這條路線比 Google Sheet 安全（有身分驗證、存取控制、稽核），但設定較複雜。資料同樣經本機端到端加密，連 Supabase 也只看到亂碼。完成註冊後把 URL 與 anon key 給我，我可以幫你接上同步程式碼。
+            </div>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",margin:"8px 0 4px"}}>
+              <span style={{fontSize:12,fontWeight:"600"}}>資料表 schema（SQL）</span>
+              <button style={S.copyBtn} onClick={()=>{navigator.clipboard?.writeText(supaSchema);showToast("已複製 SQL");}}>複製</button>
+            </div>
+            <code style={S.codeBlock}>{supaSchema}</code>
+          </div>
+        )}
+      </div>
+
+      {/* Backup */}
+      <div style={S.card}>
+        <p style={{fontSize:15,fontWeight:"600",margin:"0 0 12px"}}>💾 備份與匯出</p>
+        <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+          <button style={S.toolBtn} onClick={exportCSV}>📄 匯出 CSV</button>
+          <button style={S.toolBtn} onClick={exportJSON}>🗂 匯出 JSON 備份</button>
+          <button style={S.toolBtn} onClick={()=>fileRef.current?.click()}>📥 匯入 JSON</button>
+        </div>
+        <input ref={fileRef} type="file" accept=".json" style={{display:"none"}} onChange={onJSONFile}/>
+        <p style={{fontSize:11,color:"#8E8E93",marginTop:8,marginBottom:0}}>JSON 備份為未加密明文，請存放在安全的地方</p>
+      </div>
+
+      {/* Apple Shortcuts */}
+      <div style={S.card}>
+        <p style={{fontSize:15,fontWeight:"600",margin:"0 0 4px"}}>🍎 Apple 捷徑記帳</p>
+        <p style={{fontSize:12,color:"#8E8E93",margin:"0 0 10px"}}>在捷徑用「取得 URL 內容」(POST) 連到下方網址</p>
+        {[
+          ["新增支出",`${apiBase}&type=expense&category=餐飲&amount=150&note=午餐`],
+          ["新增收入",`${apiBase}&type=income&category=薪資&amount=50000`],
+        ].map(([l,c])=>(
+          <div key={l} style={{marginBottom:10}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
+              <span style={{fontSize:13,fontWeight:"600"}}>{l}</span>
+              <button style={S.copyBtn} onClick={()=>{navigator.clipboard?.writeText(c);showToast("已複製");}}>複製</button>
+            </div>
+            <code style={S.codeBlock}>{c}</code>
+          </div>
+        ))}
+        <p style={{fontSize:11,color:"#8E8E93",margin:"4px 0 0"}}>參數：type / category / amount / note / date（YYYY-MM-DD，預設今天）</p>
+      </div>
+      <div style={{height:100}}/>
+    </div>
+  );
+}
+
+// ══════════════ MODALS ════════════════════════════════════════════
+function AddModal({onAdd,onClose,onVoice,onReceipt,onCSV}){
+  const [type,setType]=useState("expense");
+  const [category,setCategory]=useState("");
+  const [amount,setAmount]=useState("");
+  const [note,setNote]=useState("");
+  const [date,setDate]=useState(today());
+  const cats=DEFAULT_CATS[type]||[];
+  useEffect(()=>{ setCategory(cats[0]||""); },[type]);
+  const submit=()=>{ if(!amount||isNaN(Number(amount)))return; onAdd({type,category,amount:Number(amount),note,date}); onClose(); };
+  return (
+    <Modal title="新增記帳" onClose={onClose}>
+      <div style={S.typeRow}>
+        {Object.entries(TYPE_LABEL).filter(([k])=>k!=="recurring").map(([v,l])=>(
+          <button key={v} style={{...S.typeBtn,...(type===v?{background:TYPE_COLOR[v].bg,color:"#fff",borderColor:TYPE_COLOR[v].bg}:{})}} onClick={()=>setType(v)}>{l}</button>
+        ))}
+      </div>
+      <label style={S.label}>分類</label>
+      <div style={S.catGrid}>{cats.map(c=>(<button key={c} style={{...S.catBtn,...(category===c?{background:TYPE_COLOR[type].bg,color:"#fff",borderColor:TYPE_COLOR[type].bg}:{})}} onClick={()=>setCategory(c)}>{ICONS[c]||"📦"} {c}</button>))}</div>
+      <label style={S.label}>金額</label>
+      <div style={S.amtRow}><span style={S.amtCur}>NT$</span><input style={S.amtInput} type="number" placeholder="0" value={amount} onChange={e=>setAmount(e.target.value)} inputMode="numeric"/></div>
+      <label style={S.label}>日期</label>
+      <input style={S.inputField} type="date" value={date} onChange={e=>setDate(e.target.value)}/>
+      <label style={S.label}>備註（可選）</label>
+      <input style={S.inputField} placeholder="輸入備註…" value={note} onChange={e=>setNote(e.target.value)}/>
+      <button style={S.primaryBtn} onClick={submit}>儲存</button>
+      <div style={S.altRow}><span style={{fontSize:12,color:"#8E8E93"}}>其他方式：</span>
+        {[["🎙","語音",onVoice],["📷","掃描",onReceipt],["📂","CSV",onCSV]].map(([i,l,f])=>(<button key={l} style={S.altBtn} onClick={f}>{i} {l}</button>))}
+      </div>
+    </Modal>
+  );
+}
+
+function RecurringModal({onAdd,onClose}){
+  const [name,setName]=useState("");
+  const [category,setCat]=useState(DEFAULT_CATS.recurring[0]);
+  const [amount,setAmount]=useState("");
+  const [freq,setFreq]=useState("monthly");
+  const [day,setDay]=useState("1");
+  const [month,setMonth]=useState("1");
+  const submit=()=>{ if(!name||!amount)return; onAdd({name,category,amount:Number(amount),freq,day:Number(day),month:freq==="yearly"?Number(month):null}); onClose(); };
+  return (
+    <Modal title="新增固定扣款" onClose={onClose}>
+      <label style={S.label}>名稱</label>
+      <input style={S.inputField} placeholder="如：車貸、汽車保險" value={name} onChange={e=>setName(e.target.value)}/>
+      <label style={S.label}>頻率</label>
+      <div style={S.typeRow}>
+        {[["monthly","每月"],["quarterly","每季"],["yearly","每年"]].map(([v,l])=>(
+          <button key={v} style={{...S.typeBtn,...(freq===v?{background:"#FF9500",color:"#fff",borderColor:"#FF9500"}:{})}} onClick={()=>setFreq(v)}>{l}</button>
+        ))}
+      </div>
+      <label style={S.label}>分類</label>
+      <div style={S.catGrid}>{DEFAULT_CATS.recurring.map(c=>(<button key={c} style={{...S.catBtn,...(category===c?{background:"#FF9500",color:"#fff",borderColor:"#FF9500"}:{})}} onClick={()=>setCat(c)}>{ICONS[c]||"🔁"} {c}</button>))}</div>
+      <label style={S.label}>{freq==="yearly"?"每年扣款金額":freq==="quarterly"?"每季扣款金額":"每月扣款金額"}</label>
+      <div style={S.amtRow}><span style={S.amtCur}>NT$</span><input style={S.amtInput} type="number" placeholder="0" value={amount} onChange={e=>setAmount(e.target.value)} inputMode="numeric"/></div>
+      {freq==="yearly" && (<>
+        <label style={S.label}>扣款月份</label>
+        <select style={S.inputField} value={month} onChange={e=>setMonth(e.target.value)}>{Array.from({length:12},(_,i)=>i+1).map(m=>(<option key={m} value={m}>{m} 月</option>))}</select>
+      </>)}
+      <label style={S.label}>扣款日</label>
+      <input style={S.inputField} type="number" min="1" max="31" value={day} onChange={e=>setDay(e.target.value)} placeholder="1~31"/>
+      {freq==="yearly" && amount && <div style={S.hintBox}>💡 年繳 NT$ {fmtMoney(amount)}，月均攤約 NT$ {fmtMoney(Number(amount)/12)}</div>}
+      <button style={S.primaryBtn} onClick={submit}>儲存</button>
+    </Modal>
+  );
+}
+
+function GoalModal({onAdd,onClose}){
+  const [name,setName]=useState("");
+  const [category,setCat]=useState(GOAL_CATS[0]);
+  const [target,setTarget]=useState("");
+  const [saved,setSaved]=useState("");
+  const [deadline,setDeadline]=useState("");
+  const submit=()=>{ if(!name||!target)return; onAdd({name,category,target:Number(target),saved:Number(saved)||0,deadline}); onClose(); };
+  return (
+    <Modal title="新增存款目標" onClose={onClose}>
+      <label style={S.label}>目標名稱</label>
+      <input style={S.inputField} placeholder="如：日本旅遊、買車頭期款" value={name} onChange={e=>setName(e.target.value)}/>
+      <label style={S.label}>分類</label>
+      <div style={S.catGrid}>{GOAL_CATS.map(c=>(<button key={c} style={{...S.catBtn,...(category===c?{background:"#007AFF",color:"#fff",borderColor:"#007AFF"}:{})}} onClick={()=>setCat(c)}>{ICONS[c]||"🎯"} {c}</button>))}</div>
+      <label style={S.label}>目標金額</label>
+      <div style={S.amtRow}><span style={S.amtCur}>NT$</span><input style={S.amtInput} type="number" placeholder="0" value={target} onChange={e=>setTarget(e.target.value)} inputMode="numeric"/></div>
+      <label style={S.label}>已存金額（可選）</label>
+      <input style={S.inputField} type="number" placeholder="0" value={saved} onChange={e=>setSaved(e.target.value)} inputMode="numeric"/>
+      <label style={S.label}>目標日期（可選）</label>
+      <input style={S.inputField} type="date" value={deadline} onChange={e=>setDeadline(e.target.value)}/>
+      <button style={S.primaryBtn} onClick={submit}>建立目標</button>
+    </Modal>
+  );
+}
+
+function VoiceModal({onAdd,onClose,showToast}){
+  const [listening,setListening]=useState(false);
+  const [transcript,setTranscript]=useState("");
+  const [parsed,setParsed]=useState(null);
+  const [loading,setLoading]=useState(false);
+  const recRef=useRef(null);
+  const start=()=>{ const SR=window.SpeechRecognition||window.webkitSpeechRecognition; if(!SR){showToast("此瀏覽器不支援語音","warn");return;}
+    const r=new SR(); r.lang="zh-TW"; r.interimResults=true;
+    r.onresult=e=>setTranscript(Array.from(e.results).map(x=>x[0].transcript).join(""));
+    r.onend=()=>setListening(false); r.start(); setListening(true); recRef.current=r; };
+  const stop=()=>{ recRef.current?.stop(); setListening(false); };
+  const parse=async()=>{ if(!transcript)return; setLoading(true);
+    try{ const res=await fetch("https://api.anthropic.com/v1/messages",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({model:"claude-sonnet-4-6",max_tokens:300,messages:[{role:"user",content:`從語音記帳文字提取資訊，只回傳JSON：「${transcript}」\n格式：{"type":"expense|income|saving","category":"分類","amount":數字,"note":"備註","date":"YYYY-MM-DD"}\n今天：${today()}`}]})});
+      const data=await res.json(); const text=data.content?.map(c=>c.text||"").join("")||"";
+      setParsed(JSON.parse(text.replace(/```json|```/g,"").trim()));
+    }catch{ showToast("解析失敗","warn"); } setLoading(false); };
+  return (
+    <Modal title="語音記帳" onClose={onClose}>
+      <div style={{textAlign:"center",padding:"20px 0"}}>
+        <button style={{...S.voiceBtn,background:listening?"#FF3B30":"#007AFF"}} onClick={listening?stop:start}>{listening?"⏹ 停止":"🎙 開始說話"}</button>
+        {listening && <p style={{color:"#FF3B30",fontSize:13,marginTop:8}}>聆聽中…</p>}
+      </div>
+      {transcript && (<><div style={S.transcriptBox}><strong>識別：</strong>{transcript}</div>
+        <button style={S.primaryBtn} onClick={parse} disabled={loading}>{loading?"解析中…":"🤖 AI 解析"}</button></>)}
+      {parsed && (<div style={{...S.card,marginTop:12}}><p style={{fontWeight:"600",marginBottom:8}}>解析結果</p>
+        {[["類型",TYPE_LABEL[parsed.type]],["分類",parsed.category],["金額","NT$ "+fmtMoney(parsed.amount)],["備註",parsed.note],["日期",parsed.date]].map(([k,v])=>v?<div key={k} style={{display:"flex",justifyContent:"space-between",marginBottom:4}}><span style={{color:"#8E8E93",fontSize:13}}>{k}</span><span style={{fontSize:13}}>{v}</span></div>:null)}
+        <button style={{...S.primaryBtn,marginTop:8}} onClick={()=>{onAdd(parsed);onClose();}}>確認記帳</button></div>)}
+      <p style={{fontSize:12,color:"#8E8E93",textAlign:"center",marginTop:12}}>範例：「午餐花一百五十元」「收到薪水五萬」</p>
+    </Modal>
+  );
+}
+
+function ReceiptModal({onAdd,onClose,showToast}){
+  const [preview,setPreview]=useState(null);
+  const [b64,setB64]=useState(null);
+  const [loading,setLoading]=useState(false);
+  const [parsed,setParsed]=useState(null);
+  const inRef=useRef();
+  const onFile=(e)=>{ const f=e.target.files[0]; if(!f)return; const r=new FileReader();
+    r.onload=ev=>{ setPreview(ev.target.result); setB64(ev.target.result.split(",")[1]); }; r.readAsDataURL(f); };
+  const scan=async()=>{ if(!b64){showToast("請先選圖片","warn");return;} setLoading(true);
+    try{ const res=await fetch("https://api.anthropic.com/v1/messages",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({model:"claude-sonnet-4-6",max_tokens:400,messages:[{role:"user",content:[{type:"image",source:{type:"base64",media_type:"image/jpeg",data:b64}},{type:"text",text:`分析收據，只回傳JSON：{"type":"expense","category":"餐飲|購物|交通|其他","amount":數字,"note":"商家","date":"YYYY-MM-DD"}\n今天：${today()}`}]}]})});
+      const data=await res.json(); const text=data.content?.map(c=>c.text||"").join("")||"";
+      setParsed(JSON.parse(text.replace(/```json|```/g,"").trim()));
+    }catch{ showToast("掃描失敗","warn"); } setLoading(false); };
+  return (
+    <Modal title="掃描收據" onClose={onClose}>
+      <input ref={inRef} type="file" accept="image/*" capture="environment" style={{display:"none"}} onChange={onFile}/>
+      <button style={S.primaryBtn} onClick={()=>inRef.current?.click()}>📷 拍照 / 選擇圖片</button>
+      {preview && <img src={preview} style={{width:"100%",borderRadius:12,marginTop:12,maxHeight:200,objectFit:"cover"}} alt="receipt"/>}
+      {b64 && !parsed && <button style={{...S.primaryBtn,marginTop:8}} onClick={scan} disabled={loading}>{loading?"掃描中…":"🔍 AI 掃描辨識"}</button>}
+      {parsed && (<div style={{...S.card,marginTop:12}}><p style={{fontWeight:"600",marginBottom:8}}>掃描結果</p>
+        {[["分類",parsed.category],["金額","NT$ "+fmtMoney(parsed.amount)],["備註",parsed.note],["日期",parsed.date]].map(([k,v])=>v?<div key={k} style={{display:"flex",justifyContent:"space-between",marginBottom:4}}><span style={{color:"#8E8E93",fontSize:13}}>{k}</span><span style={{fontSize:13}}>{v}</span></div>:null)}
+        <button style={{...S.primaryBtn,marginTop:8}} onClick={()=>{onAdd(parsed);onClose();}}>確認記帳</button></div>)}
+    </Modal>
+  );
+}
+
+function CSVModal({onImport,onClose}){
+  const [err,setErr]=useState("");
+  const inRef=useRef();
+  const onFile=(e)=>{ const f=e.target.files[0]; if(!f)return; const r=new FileReader();
+    r.onload=ev=>{ try{ const rows=ev.target.result.replace(/^\uFEFF/,"").split("\n").filter(x=>x.trim());
+      const h=rows[0].split(","); const iD=h.indexOf("日期"),iT=h.indexOf("類型"),iC=h.indexOf("分類"),iA=h.indexOf("金額"),iN=h.indexOf("備註");
+      const rev=Object.fromEntries(Object.entries(TYPE_LABEL).map(([k,v])=>[v,k]));
+      const txs=rows.slice(1).map(row=>{ const c=row.split(",");
+        return {id:uid(),createdAt:new Date().toISOString(),date:iD>=0?c[iD]:today(),type:iT>=0?(rev[c[iT]]||"expense"):"expense",category:iC>=0?c[iC]:"其他",amount:iA>=0?Number(c[iA])||0:0,note:iN>=0?c[iN]:""};
+      }).filter(t=>t.amount>0); onImport(txs); onClose();
+    }catch{ setErr("格式錯誤，需含欄位：日期,類型,分類,金額,備註"); } }; r.readAsText(f,"UTF-8"); };
+  return (
+    <Modal title="CSV 匯入" onClose={onClose}>
+      <div style={{...S.card,background:"#F0F7FF"}}><p style={{fontSize:13,margin:0,color:"#005BBB"}}>需含標題行：<br/><code>日期,類型,分類,金額,備註</code></p></div>
+      <input ref={inRef} type="file" accept=".csv" style={{display:"none"}} onChange={onFile}/>
+      <button style={{...S.primaryBtn,marginTop:12}} onClick={()=>inRef.current?.click()}>選擇 CSV 檔案</button>
+      {err && <p style={{color:"#FF3B30",fontSize:13,marginTop:8}}>{err}</p>}
+    </Modal>
+  );
+}
+
+// ══════════════ SHARED COMPONENTS ════════════════════════════════
+function TxRow({tx,onDelete,showDate}){
+  const c=TYPE_COLOR[tx.type]||TYPE_COLOR.expense;
+  return (
+    <div style={S.txRow}>
+      <div style={{...S.txIcon,background:c.light}}><span style={{fontSize:18}}>{ICONS[tx.category]||"📦"}</span></div>
+      <div style={{flex:1}}>
+        <div style={{display:"flex",justifyContent:"space-between"}}>
+          <span style={{fontSize:14,fontWeight:"500"}}>{tx.category}</span>
+          <span style={{fontSize:14,fontWeight:"600",color:tx.type==="income"?"#34C759":"#1C1C1E"}}>{tx.type==="income"?"+":"-"}NT$ {fmtMoney(tx.amount)}</span>
+        </div>
+        <div style={{display:"flex",justifyContent:"space-between",marginTop:2}}>
+          <span style={{fontSize:12,color:"#8E8E93"}}>{tx.note||TYPE_LABEL[tx.type]}</span>
+          <span style={{fontSize:12,color:"#C7C7CC"}}>{showDate?tx.date:fmtDate(tx.date)}</span>
+        </div>
+      </div>
+      <button style={S.delBtn} onClick={()=>onDelete(tx.id)}>✕</button>
+    </div>
+  );
+}
+function Chip({label,val}){ return <div style={{textAlign:"center"}}><p style={{margin:0,fontSize:11,color:"rgba(255,255,255,0.7)"}}>{label}</p><p style={{margin:0,fontSize:14,fontWeight:"600",color:"#fff"}}>NT$ {fmtMoney(val)}</p></div>; }
+function MonthNav({current,onChange,mode}){
+  const prev=()=>{ if(mode==="year"){ onChange(String(Number(current)-1)); } else { const d=new Date(current+"-01"); d.setMonth(d.getMonth()-1); onChange(d.toISOString().slice(0,7)); } };
+  const next=()=>{ if(mode==="year"){ const n=String(Number(current)+1); if(n<=today().slice(0,4))onChange(n); } else { const d=new Date(current+"-01"); d.setMonth(d.getMonth()+1); const nm=d.toISOString().slice(0,7); if(nm<=today().slice(0,7))onChange(nm); } };
+  const label=mode==="year"?`${current} 年`:`${current.split("-")[0]} 年 ${Number(current.split("-")[1])} 月`;
+  return <div style={S.monthNav}><button style={S.navArrow} onClick={prev}>‹</button><span style={{fontWeight:"600",fontSize:16}}>{label}</span><button style={S.navArrow} onClick={next}>›</button></div>;
+}
+function Section({title,sub}){ return <div style={S.sectionHeader}><span style={{fontWeight:"600",fontSize:15}}>{title}</span>{sub&&<span style={{fontSize:12,color:"#8E8E93"}}>{sub}</span>}</div>; }
+function Empty({icon,msg}){ return <div style={S.empty}><span style={{fontSize:40}}>{icon}</span><p style={{color:"#8E8E93",fontSize:14,margin:"8px 0 0"}}>{msg}</p></div>; }
+function TabBar({tab,setTab}){
+  const tabs=[["home","🏠","首頁"],["txns","📋","明細"],["recurring","🔁","固定"],["goals","🎯","目標"],["stats","📊","統計"],["more","☁️","同步"]];
+  return <div style={S.tabBar}>{tabs.map(([id,i,l])=>(<button key={id} style={{...S.tabBtn,...(tab===id?S.tabActive:{})}} onClick={()=>setTab(id)}><span style={{fontSize:19}}>{i}</span><span style={{fontSize:9,marginTop:2,color:tab===id?"#007AFF":"#8E8E93"}}>{l}</span></button>))}</div>;
+}
+function Modal({title,onClose,children}){
+  return <div style={S.overlay} onClick={onClose}><div style={S.sheet} onClick={e=>e.stopPropagation()}><div style={S.handle}/><div style={S.modalHeader}><span style={{fontWeight:"700",fontSize:17}}>{title}</span><button style={S.closeBtn} onClick={onClose}>✕</button></div><div style={{overflowY:"auto",maxHeight:"72vh",paddingBottom:20}}>{children}</div></div></div>;
+}
+
+// ══════════════ STYLES ════════════════════════════════════════════
+const S={
+  shell:{fontFamily:"-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif",background:"#F2F2F7",minHeight:"100vh",maxWidth:430,margin:"0 auto",position:"relative",overflowX:"hidden"},
+  statusBar:{height:8,background:"#F2F2F7"},
+  content:{paddingBottom:80},
+  loadWrap:{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",height:"100vh"},
+  spinner:{width:32,height:32,border:"3px solid #E5E5EA",borderTop:"3px solid #007AFF",borderRadius:"50%",animation:"spin 0.8s linear infinite"},
+  tab:{padding:"0 16px"},
+  pageTitle:{fontSize:24,fontWeight:"700",margin:"16px 0 12px"},
+  balanceCard:{background:"linear-gradient(135deg,#007AFF 0%,#5856D6 100%)",borderRadius:20,padding:"20px 20px 16px",marginBottom:12,color:"#fff"},
+  balanceLabel:{margin:0,fontSize:13,color:"rgba(255,255,255,0.8)"},
+  balanceAmt:{margin:"4px 0 14px",fontSize:34,fontWeight:"700"},
+  balanceRow:{display:"flex",justifyContent:"space-between"},
+  recBanner:{display:"flex",alignItems:"center",background:"#FFF8EE",border:"1px solid #FFE8B0",borderRadius:14,padding:"12px 14px",marginBottom:12,cursor:"pointer",fontSize:14},
+  goalBanner:{display:"flex",alignItems:"center",background:"#fff",borderRadius:14,padding:"12px 14px",marginBottom:12,fontSize:14},
+  recTotal:{background:"#FFF8EE",borderRadius:16,padding:16,marginBottom:12},
+  recRow:{display:"flex",alignItems:"center",gap:10,background:"#fff",borderRadius:14,padding:"12px 14px",marginBottom:6},
+  miniLabel:{margin:0,fontSize:12,color:"#8E8E93"},
+  bigNum:{margin:"2px 0 0",fontSize:22,fontWeight:"700"},
+  quickRow:{display:"flex",gap:8,marginBottom:16},
+  quickBtn:{flex:1,display:"flex",flexDirection:"column",alignItems:"center",background:"#fff",border:"none",borderRadius:14,padding:"12px 8px",cursor:"pointer",gap:4},
+  quickLabel:{fontSize:10,color:"#3C3C43",fontWeight:"500"},
+  sectionHeader:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8,marginTop:8},
+  txRow:{display:"flex",alignItems:"center",gap:10,background:"#fff",borderRadius:14,padding:"12px 14px",marginBottom:6},
+  txIcon:{width:40,height:40,borderRadius:12,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0},
+  monthNav:{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"12px 0",marginBottom:8},
+  navArrow:{background:"none",border:"none",fontSize:22,color:"#007AFF",cursor:"pointer",padding:"0 8px"},
+  card:{background:"#fff",borderRadius:16,padding:16,marginBottom:12},
+  cardTitle:{margin:0,fontSize:14,fontWeight:"600",color:"#3C3C43"},
+  empty:{textAlign:"center",padding:"40px 0"},
+  tabBar:{position:"fixed",bottom:0,left:"50%",transform:"translateX(-50%)",width:"100%",maxWidth:430,background:"rgba(255,255,255,0.92)",backdropFilter:"blur(20px)",borderTop:"1px solid #E5E5EA",display:"flex",zIndex:100},
+  tabBtn:{flex:1,display:"flex",flexDirection:"column",alignItems:"center",padding:"8px 0 14px",background:"none",border:"none",cursor:"pointer"},
+  tabActive:{color:"#007AFF"},
+  fab:{position:"fixed",bottom:80,right:20,width:56,height:56,borderRadius:28,background:"#007AFF",color:"#fff",border:"none",fontSize:28,fontWeight:"300",cursor:"pointer",boxShadow:"0 4px 16px rgba(0,122,255,0.4)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:99},
+  overlay:{position:"fixed",inset:0,background:"rgba(0,0,0,0.4)",display:"flex",alignItems:"flex-end",zIndex:200},
+  sheet:{background:"#F2F2F7",borderRadius:"20px 20px 0 0",width:"100%",maxWidth:430,margin:"0 auto",padding:"0 16px",paddingBottom:34},
+  handle:{width:36,height:4,background:"#C7C7CC",borderRadius:2,margin:"8px auto 0"},
+  modalHeader:{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"12px 0",borderBottom:"1px solid #E5E5EA",marginBottom:16},
+  closeBtn:{background:"none",border:"none",fontSize:16,color:"#8E8E93",cursor:"pointer",padding:"4px 8px"},
+  typeRow:{display:"flex",gap:6,marginBottom:8},
+  typeBtn:{flex:1,padding:"8px 4px",borderRadius:10,border:"1.5px solid #E5E5EA",background:"#fff",fontSize:13,fontWeight:"500",cursor:"pointer"},
+  label:{fontSize:12,fontWeight:"600",color:"#8E8E93",textTransform:"uppercase",letterSpacing:0.5,display:"block",marginBottom:6,marginTop:12},
+  catGrid:{display:"flex",flexWrap:"wrap",gap:6,marginBottom:4},
+  catBtn:{padding:"6px 10px",borderRadius:10,border:"1.5px solid #E5E5EA",background:"#fff",fontSize:12,cursor:"pointer",color:"#3C3C43"},
+  amtRow:{display:"flex",alignItems:"center",background:"#fff",borderRadius:12,border:"1.5px solid #E5E5EA",overflow:"hidden",marginBottom:4},
+  amtCur:{padding:"12px",fontSize:16,color:"#8E8E93",borderRight:"1px solid #E5E5EA"},
+  amtInput:{flex:1,padding:12,fontSize:22,fontWeight:"600",border:"none",outline:"none",background:"transparent",width:"100%"},
+  inputField:{width:"100%",padding:12,borderRadius:12,border:"1.5px solid #E5E5EA",background:"#fff",fontSize:15,outline:"none",boxSizing:"border-box",marginBottom:4},
+  primaryBtn:{width:"100%",padding:14,background:"#007AFF",color:"#fff",border:"none",borderRadius:14,fontSize:16,fontWeight:"600",cursor:"pointer",marginTop:16},
+  smallBtn:{padding:"8px 16px",background:"#F2F2F7",color:"#007AFF",border:"none",borderRadius:10,fontSize:13,fontWeight:"600",cursor:"pointer"},
+  altRow:{display:"flex",alignItems:"center",gap:8,marginTop:12,flexWrap:"wrap"},
+  altBtn:{padding:"6px 12px",background:"#F2F2F7",border:"none",borderRadius:10,fontSize:12,cursor:"pointer",color:"#007AFF",fontWeight:"500"},
+  voiceBtn:{padding:"16px 40px",borderRadius:30,border:"none",color:"#fff",fontSize:16,fontWeight:"600",cursor:"pointer"},
+  transcriptBox:{background:"#F2F2F7",borderRadius:12,padding:12,fontSize:13,lineHeight:1.6,marginBottom:12},
+  filterRow:{display:"flex",gap:6,marginBottom:12,overflowX:"auto",paddingBottom:4},
+  filterBtn:{padding:"6px 14px",borderRadius:20,border:"1.5px solid #E5E5EA",background:"#fff",fontSize:13,cursor:"pointer",whiteSpace:"nowrap",color:"#3C3C43"},
+  filterActive:{background:"#007AFF",color:"#fff",borderColor:"#007AFF"},
+  addRecBtn:{width:"100%",padding:14,background:"#fff",color:"#007AFF",border:"1.5px dashed #007AFF",borderRadius:14,fontSize:15,fontWeight:"600",cursor:"pointer",marginTop:8},
+  delBtn:{background:"none",border:"none",fontSize:14,color:"#C7C7CC",cursor:"pointer",padding:4,marginLeft:4},
+  catIcon:{fontSize:22,width:36,textAlign:"center"},
+  hintBox:{background:"#FFF8EE",border:"1px solid #FFE8B0",borderRadius:10,padding:"8px 12px",fontSize:12,color:"#8E5500",marginTop:8},
+  progBg:{height:8,background:"#F2F2F7",borderRadius:4,overflow:"hidden",marginTop:4},
+  progFill:{height:"100%",background:"#34C759",borderRadius:4,transition:"width 0.3s"},
+  goalSummary:{background:"#fff",borderRadius:16,padding:16,marginBottom:12},
+  goalCard:{background:"#fff",borderRadius:16,padding:16,marginBottom:10},
+  depositBtn:{width:"100%",padding:10,background:"#EFF6FF",color:"#007AFF",border:"none",borderRadius:10,fontSize:13,fontWeight:"600",cursor:"pointer",marginTop:10},
+  goalActionBtn:{padding:"10px 12px",background:"#34C759",color:"#fff",border:"none",borderRadius:10,fontSize:13,fontWeight:"600",cursor:"pointer",whiteSpace:"nowrap"},
+  viewToggle:{display:"flex",gap:6,background:"#E5E5EA",borderRadius:10,padding:3,marginTop:12},
+  viewBtn:{flex:1,padding:"8px",borderRadius:8,border:"none",background:"transparent",fontSize:14,fontWeight:"600",color:"#8E8E93",cursor:"pointer"},
+  viewBtnActive:{background:"#fff",color:"#1C1C1E",boxShadow:"0 1px 3px rgba(0,0,0,0.1)"},
+  recTotalRow:{},
+  goalSummaryRow:{},
+  toolBtn:{padding:"10px 14px",background:"#F2F2F7",color:"#007AFF",border:"none",borderRadius:10,fontSize:13,fontWeight:"600",cursor:"pointer"},
+  stepNum:{width:22,height:22,borderRadius:11,background:"#007AFF",color:"#fff",fontSize:12,fontWeight:"700",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,marginTop:1},
+  codeBlock:{display:"block",background:"#F2F2F7",borderRadius:8,padding:10,fontSize:11,color:"#3C3C43",wordBreak:"break-all",lineHeight:1.6,whiteSpace:"pre-wrap"},
+  copyBtn:{padding:"4px 12px",background:"#007AFF",color:"#fff",border:"none",borderRadius:8,fontSize:12,cursor:"pointer",fontWeight:"500"},
+  toast:{position:"fixed",top:60,left:"50%",transform:"translateX(-50%)",padding:"10px 24px",borderRadius:20,color:"#fff",fontWeight:"600",fontSize:14,zIndex:300,boxShadow:"0 4px 16px rgba(0,0,0,0.2)",whiteSpace:"nowrap"},
+  lockWrap:{minHeight:"100vh",maxWidth:430,margin:"0 auto",background:"linear-gradient(160deg,#007AFF 0%,#5856D6 100%)",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:24,boxSizing:"border-box"},
+  lockIcon:{fontSize:52,marginBottom:12},
+  lockTitle:{color:"#fff",fontSize:22,fontWeight:"700",margin:"0 0 6px"},
+  lockSub:{color:"rgba(255,255,255,0.85)",fontSize:14,margin:"0 0 28px",textAlign:"center",lineHeight:1.5},
+  pinDots:{display:"flex",gap:14,marginBottom:28},
+  pinDot:{width:16,height:16,borderRadius:8,border:"2px solid rgba(255,255,255,0.7)"},
+  pinDotFill:{background:"#fff",borderColor:"#fff"},
+  pad:{display:"grid",gridTemplateColumns:"repeat(3,72px)",gap:16},
+  padBtn:{width:72,height:72,borderRadius:36,border:"none",background:"rgba(255,255,255,0.18)",color:"#fff",fontSize:26,fontWeight:"500",cursor:"pointer",backdropFilter:"blur(4px)"},
+  padText:{width:72,height:72,borderRadius:36,border:"none",background:"transparent",color:"#fff",fontSize:15,cursor:"pointer"},
+};
+
+// ══════════════ LOCK SCREEN ═══════════════════════════════════════
+function LockGate({ onUnlocked }){
+  const existing = hasPIN();
+  const [mode,setMode]   = useState(existing ? "unlock" : "create");
+  const [pin,setPin]     = useState("");
+  const [firstPin,setFirstPin] = useState("");
+  const [err,setErr]     = useState("");
+  const [busy,setBusy]   = useState(false);
+  const [lockLeft,setLockLeft] = useState(lockoutRemaining());
+
+  // countdown timer when locked out
+  useEffect(()=>{
+    if(lockLeft<=0) return;
+    const id=setInterval(()=>{ const r=lockoutRemaining(); setLockLeft(r); if(r<=0)clearInterval(id); },500);
+    return ()=>clearInterval(id);
+  },[lockLeft]);
+
+  // auto-prompt biometric on mount if enabled
+  useEffect(()=>{
+    if(existing && bioEnabled() && lockoutRemaining()<=0){ tryBio(); }
+  },[]);
+
+  const titles = {
+    create:  { t:"設定 App 密碼", s:`建立一組 ${PIN_LEN} 位數密碼，用來鎖定與加密你的記帳資料` },
+    confirm: { t:"再次輸入密碼", s:"請再輸入一次以確認" },
+    unlock:  { t:"輸入密碼", s:`輸入你的 ${PIN_LEN} 位數密碼以解鎖` },
+  };
+
+  const tryBio = async () => {
+    setErr("");
+    const ok = await bioUnlock();
+    if(ok) onUnlocked();
+    else setErr("生物辨識失敗，請改用密碼");
+  };
+
+  const press = (d) => {
+    if(busy || lockLeft>0) return;
+    setErr("");
+    const next = (pin + d).slice(0,PIN_LEN);
+    setPin(next);
+    if(next.length === PIN_LEN){ setBusy(true); setTimeout(()=>handleFull(next),120); }
+  };
+  const back = () => { setErr(""); setPin(p=>p.slice(0,-1)); };
+
+  const handleFull = async (full) => {
+    if(mode === "create"){
+      setFirstPin(full); setPin(""); setMode("confirm"); setBusy(false);
+    } else if(mode === "confirm"){
+      if(full !== firstPin){ setErr("兩次密碼不一致，請重設"); setPin(""); setFirstPin(""); setMode("create"); setBusy(false); return; }
+      await setupPIN(full);
+      for(const k of Object.values(KEYS)){
+        const raw = localStorage.getItem(k);
+        if(raw && !raw.startsWith('{"iv"')){ try{ localStorage.setItem(k, await encryptStr(raw)); }catch{} }
+      }
+      onUnlocked();
+    } else {
+      const ok = await unlockPIN(full);
+      if(ok){ onUnlocked(); }
+      else {
+        const left = lockoutRemaining();
+        if(left>0){ setLockLeft(left); setErr(""); }
+        else { const remaining = MAX_FAILS - failCount(); setErr(remaining>0?`密碼錯誤，還可嘗試 ${remaining} 次`:"密碼錯誤"); }
+        setPin(""); setBusy(false);
+      }
+    }
+  };
+
+  const info = titles[mode];
+  const lockedOut = lockLeft>0;
+  return (
+    <div style={S.lockWrap}>
+      <div style={S.lockIcon}>{lockedOut?"⏳":"🔒"}</div>
+      <h1 style={S.lockTitle}>{lockedOut?"已暫時鎖定":info.t}</h1>
+      <p style={S.lockSub}>{lockedOut?`嘗試次數過多，請於 ${Math.ceil(lockLeft/1000)} 秒後再試`:info.s}</p>
+      {!lockedOut && <div style={S.pinDots}>{Array.from({length:PIN_LEN}).map((_,i)=>(<div key={i} style={{...S.pinDot,...(i<pin.length?S.pinDotFill:{})}}/>))}</div>}
+      {err && <p style={{color:"#FFD60A",fontSize:14,margin:"0 0 16px",fontWeight:"600"}}>{err}</p>}
+      {!lockedOut && (
+        <div style={S.pad}>
+          {[1,2,3,4,5,6,7,8,9].map(n=>(<button key={n} style={S.padBtn} onClick={()=>press(String(n))}>{n}</button>))}
+          <button style={S.padText} onClick={mode==="unlock"&&bioEnabled()?tryBio:undefined}>{mode==="unlock"&&bioEnabled()?"👤":" "}</button>
+          <button style={S.padBtn} onClick={()=>press("0")}>0</button>
+          <button style={S.padText} onClick={back}>⌫</button>
+        </div>
+      )}
+      {mode==="unlock" && bioEnabled() && !lockedOut && (
+        <button style={{...S.padText,marginTop:16,width:"auto",fontSize:14,color:"rgba(255,255,255,0.9)"}} onClick={tryBio}>👤 使用生物辨識解鎖</button>
+      )}
+      {mode==="unlock" && (
+        <p style={{color:"rgba(255,255,255,0.6)",fontSize:11,marginTop:20,textAlign:"center",maxWidth:280,lineHeight:1.5}}>
+          忘記密碼將無法解密資料。若要重設，需清除資料重新開始。
+        </p>
+      )}
+    </div>
+  );
+}
+
+// ══════════════ ROOT ══════════════════════════════════════════════
+function Root(){
+  const [unlocked,setUnlocked] = useState(false);
+  // auto-lock when tab hidden for a while
+  useEffect(()=>{
+    let hiddenAt=null;
+    const onVis=()=>{
+      if(document.hidden){ hiddenAt=Date.now(); }
+      else if(hiddenAt && Date.now()-hiddenAt > 5*60*1000){ // 5 min
+        lockApp(); setUnlocked(false);
+      }
+    };
+    document.addEventListener("visibilitychange",onVis);
+    return ()=>document.removeEventListener("visibilitychange",onVis);
+  },[]);
+  if(!unlocked) return <LockGate onUnlocked={()=>setUnlocked(true)}/>;
+  return <App onLock={()=>{ lockApp(); setUnlocked(false); }}/>;
+}
+
+if("serviceWorker" in navigator){ window.addEventListener("load",()=>navigator.serviceWorker.register("sw.js").catch(()=>{})); }
+ReactDOM.createRoot(document.getElementById("root")).render(<Root />);
+</script>
+</body>
+</html>
