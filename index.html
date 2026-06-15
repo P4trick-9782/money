@@ -28,7 +28,7 @@
 const { useState, useEffect, useRef } = React;
 
 // ── Storage + Encryption ─────────────────────────────────────────
-const KEYS = { txns:"fin_txns", recurring:"fin_recurring", goals:"fin_goals", sync:"fin_sync" };
+const KEYS = { txns:"fin_txns", recurring:"fin_recurring", goals:"fin_goals", sync:"fin_sync", pending:"fin_pending" };
 const LOCK = { verifier:"fin_lock_v", salt:"fin_lock_salt", fails:"fin_lock_fails", until:"fin_lock_until", bio:"fin_bio_cred", biowrap:"fin_bio_wrap" };
 const PIN_LEN = 6;
 const MAX_FAILS = 5;          // lock out after this many wrong tries
@@ -240,6 +240,7 @@ function App({ onLock }){
   const [txns,setTxns]       = useState([]);
   const [recurring,setRec]   = useState([]);
   const [goals,setGoals]     = useState([]);
+  const [pending,setPending] = useState([]); // 待確認的刷卡記錄
   const [sync,setSync]       = useState({ url:"", token:"", lastSync:null });
   const [modal,setModal]     = useState(null);
   const [toast,setToast]     = useState(null);
@@ -248,16 +249,47 @@ function App({ onLock }){
   const [year,setYear]       = useState(today().slice(0,4));
 
   useEffect(()=>{ (async()=>{
-    const t=await load(KEYS.txns), r=await load(KEYS.recurring), g=await load(KEYS.goals), s=await load(KEYS.sync);
-    if(t)setTxns(t); if(r)setRec(r); if(g)setGoals(g); if(s)setSync(s);
+    const t=await load(KEYS.txns), r=await load(KEYS.recurring), g=await load(KEYS.goals), s=await load(KEYS.sync), p=await load(KEYS.pending);
+    if(t)setTxns(t); if(r)setRec(r); if(g)setGoals(g); if(s)setSync(s); if(p)setPending(p);
     setLoaded(true);
+    // 捷徑帶入的刷卡資料：解析網址參數，存成待確認
+    try{
+      const sp=new URLSearchParams(window.location.search);
+      if(sp.get("api")==="1" && (sp.get("amount")||sp.get("raw"))){
+        const entry={
+          id:uid(),
+          type:sp.get("type")||"expense",
+          category:sp.get("category")||"其他",
+          amount:Number(sp.get("amount"))||0,
+          note:sp.get("note")||sp.get("merchant")||"刷卡消費",
+          date:sp.get("date")||today(),
+          raw:sp.get("raw")||"",          // 原始通知文字（供 AI 解析）
+          source:sp.get("source")||"刷卡通知",
+          createdAt:new Date().toISOString(),
+        };
+        setPending(prev=>[entry,...prev]);
+        // 清掉網址參數，避免重整時重複帶入
+        window.history.replaceState({},"",window.location.pathname);
+        setTab("home");
+      }
+    }catch{}
   })(); },[]);
   useEffect(()=>{ if(loaded)save(KEYS.txns,txns); },[txns,loaded]);
   useEffect(()=>{ if(loaded)save(KEYS.recurring,recurring); },[recurring,loaded]);
   useEffect(()=>{ if(loaded)save(KEYS.goals,goals); },[goals,loaded]);
   useEffect(()=>{ if(loaded)save(KEYS.sync,sync); },[sync,loaded]);
+  useEffect(()=>{ if(loaded)save(KEYS.pending,pending); },[pending,loaded]);
 
   const showToast=(msg,type="success")=>{ setToast({msg,type}); setTimeout(()=>setToast(null),2500); };
+
+  // 待確認：核可 → 寫入正式記帳；忽略 → 移除
+  const confirmPending=(entry)=>{
+    setTxns(p=>[{ id:uid(), createdAt:new Date().toISOString(), type:entry.type, category:entry.category, amount:Number(entry.amount), note:entry.note, date:entry.date },...p]);
+    setPending(p=>p.filter(x=>x.id!==entry.id));
+    showToast("已確認記帳 ✓");
+  };
+  const dismissPending=(id)=>{ setPending(p=>p.filter(x=>x.id!==id)); showToast("已忽略","warn"); };
+  const updatePending=(id,patch)=>{ setPending(p=>p.map(x=>x.id===id?{...x,...patch}:x)); };
 
   const addTx=(tx)=>{ setTxns(p=>[{...tx,id:uid(),createdAt:new Date().toISOString()},...p]); showToast("記帳成功 ✓"); };
   const delTx=(id)=>{ setTxns(p=>p.filter(t=>t.id!==id)); showToast("已刪除","warn"); };
@@ -331,7 +363,7 @@ function App({ onLock }){
     <div style={S.shell}>
       <div style={S.statusBar}/>
       <div style={S.content}>
-        {tab==="home"     && <Home {...{mTx,mInc,mExp,mSav,recMonthly,balance,month,setMonth,delTx,setModal,recurring,goals}}/>}
+        {tab==="home"     && <Home {...{mTx,mInc,mExp,mSav,recMonthly,balance,month,setMonth,delTx,setModal,recurring,goals,pending,confirmPending,dismissPending,updatePending,showToast}}/>}
         {tab==="txns"     && <Txns {...{txns,delTx,month,setMonth}}/>}
         {tab==="recurring"&& <Recurring {...{recurring,delRec,setModal}}/>}
         {tab==="goals"    && <Goals {...{goals,delGoal,updateGoal,setModal}}/>}
@@ -356,12 +388,83 @@ function sum(arr,type){ return arr.filter(t=>t.type===type).reduce((s,t)=>s+Numb
 function dl(content,name,type){ const b=new Blob([content],{type:type+";charset=utf-8;"}); const u=URL.createObjectURL(b); const a=document.createElement("a"); a.href=u; a.download=name; a.click(); }
 
 // ══════════════ HOME ══════════════════════════════════════════════
-function Home({mTx,mInc,mExp,mSav,recMonthly,balance,month,setMonth,delTx,setModal,goals}){
+// ══════════════ PENDING (刷卡待確認) ═════════════════════════════
+function PendingRow({entry,onConfirm,onDismiss,onUpdate,showToast}){
+  const [edit,setEdit]=useState(false);
+  const [parsing,setParsing]=useState(false);
+  const cats=DEFAULT_CATS[entry.type]||DEFAULT_CATS.expense;
+
+  // 用 AI 從原始通知文字解析金額/商家/分類
+  const aiParse=async()=>{
+    if(!entry.raw){ showToast("沒有原始通知文字","warn"); return; }
+    setParsing(true);
+    try{
+      const res=await fetch("https://api.anthropic.com/v1/messages",{method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({model:"claude-sonnet-4-6",max_tokens:300,messages:[{role:"user",content:`從刷卡通知文字提取記帳資訊，只回傳JSON：「${entry.raw}」\n格式：{"category":"餐飲|交通|購物|娛樂|醫療|住房|水電|其他","amount":數字,"note":"商家名稱","date":"YYYY-MM-DD"}\n今天：${today()}`}]})});
+      const data=await res.json(); const text=data.content?.map(c=>c.text||"").join("")||"";
+      const j=JSON.parse(text.replace(/```json|```/g,"").trim());
+      onUpdate(entry.id,{ category:j.category||entry.category, amount:Number(j.amount)||entry.amount, note:j.note||entry.note, date:j.date||entry.date });
+      showToast("AI 已解析 ✓");
+    }catch{ showToast("解析失敗","warn"); }
+    setParsing(false);
+  };
+
+  return (
+    <div style={S.pendingRow}>
+      <div style={{display:"flex",alignItems:"center",gap:10}}>
+        <span style={{fontSize:20}}>{ICONS[entry.category]||"💳"}</span>
+        <div style={{flex:1,minWidth:0}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline"}}>
+            <span style={{fontWeight:"600",fontSize:15}}>{entry.note}</span>
+            <span style={{fontWeight:"700",fontSize:16,color:"#FF3B30"}}>NT$ {fmtMoney(entry.amount)}</span>
+          </div>
+          <div style={{fontSize:11,color:"#8E8E93",marginTop:1}}>{entry.source} · {entry.category} · {entry.date}</div>
+        </div>
+      </div>
+
+      {edit && (
+        <div style={{marginTop:10,paddingTop:10,borderTop:"1px solid #F2F2F7"}}>
+          <div style={S.catGrid}>
+            {cats.map(c=>(<button key={c} style={{...S.catBtn,...(entry.category===c?{background:"#FF3B30",color:"#fff",borderColor:"#FF3B30"}:{})}} onClick={()=>onUpdate(entry.id,{category:c})}>{ICONS[c]||"📦"} {c}</button>))}
+          </div>
+          <div style={{display:"flex",gap:6,marginTop:8}}>
+            <input style={{...S.inputField,marginBottom:0,flex:1}} type="number" value={entry.amount} onChange={e=>onUpdate(entry.id,{amount:Number(e.target.value)})} inputMode="numeric"/>
+            <input style={{...S.inputField,marginBottom:0,flex:1.5}} value={entry.note} onChange={e=>onUpdate(entry.id,{note:e.target.value})} placeholder="備註"/>
+          </div>
+          {entry.raw && <button style={{...S.smallBtn,marginTop:8,width:"100%"}} onClick={aiParse} disabled={parsing}>{parsing?"AI 解析中…":"🤖 用 AI 重新解析通知"}</button>}
+        </div>
+      )}
+
+      <div style={{display:"flex",gap:6,marginTop:10}}>
+        <button style={S.pendConfirm} onClick={()=>onConfirm(entry)}>✓ 確認記帳</button>
+        <button style={S.pendEdit} onClick={()=>setEdit(!edit)}>{edit?"完成":"編輯"}</button>
+        <button style={S.pendDismiss} onClick={()=>onDismiss(entry.id)}>忽略</button>
+      </div>
+    </div>
+  );
+}
+
+// ══════════════ HOME ══════════════════════════════════════════════
+function Home({mTx,mInc,mExp,mSav,recMonthly,balance,month,setMonth,delTx,setModal,goals,pending,confirmPending,dismissPending,updatePending,showToast}){
   const recent=mTx.slice(0,12);
   const topGoal=goals[0];
   return (
     <div style={S.tab}>
       <MonthNav current={month} onChange={setMonth} mode="month"/>
+
+      {/* 待確認刷卡通知 */}
+      {pending && pending.length>0 && (
+        <div style={S.pendingWrap}>
+          <div style={S.pendingHeader}>
+            <span style={{fontWeight:"700",fontSize:15}}>💳 待確認刷卡</span>
+            <span style={S.pendingCount}>{pending.length}</span>
+          </div>
+          {pending.map(p=>(
+            <PendingRow key={p.id} entry={p} onConfirm={confirmPending} onDismiss={dismissPending} onUpdate={updatePending} showToast={showToast}/>
+          ))}
+        </div>
+      )}
+
       <div style={S.balanceCard}>
         <p style={S.balanceLabel}>本月結餘</p>
         <p style={{...S.balanceAmt,color:balance>=0?"#fff":"#FFD60A"}}>NT$ {fmtMoney(balance)}</p>
@@ -791,13 +894,19 @@ create policy "own row" on fin_data
         <p style={{fontSize:11,color:"#8E8E93",marginTop:8,marginBottom:0}}>JSON 備份為未加密明文，請存放在安全的地方</p>
       </div>
 
-      {/* Apple Shortcuts */}
+      {/* Apple Shortcuts — 刷卡通知記帳 */}
       <div style={S.card}>
-        <p style={{fontSize:15,fontWeight:"600",margin:"0 0 4px"}}>🍎 Apple 捷徑記帳</p>
-        <p style={{fontSize:12,color:"#8E8E93",margin:"0 0 10px"}}>在捷徑用「取得 URL 內容」(POST) 連到下方網址</p>
+        <p style={{fontSize:15,fontWeight:"600",margin:"0 0 4px"}}>💳 刷卡通知即時記帳</p>
+        <p style={{fontSize:12,color:"#8E8E93",margin:"0 0 10px",lineHeight:1.5}}>
+          用 iPhone 捷徑「自動化」：收到銀行/信用卡/Apple Pay 通知 → 開啟本 App 並帶入金額 → 首頁出現「待確認刷卡」，點一下即記帳。
+        </p>
+        <div style={{...S.hintBox,marginBottom:10}}>
+          捷徑動作用「<b>打開 URL</b>」開啟下方網址即可（不是「取得 URL 內容」）。把通知的金額、文字用捷徑變數帶入對應參數。
+        </div>
         {[
-          ["新增支出",`${apiBase}&type=expense&category=餐飲&amount=150&note=午餐`],
-          ["新增收入",`${apiBase}&type=income&category=薪資&amount=50000`],
+          ["基本：帶入金額",`${apiBase}&amount=150&note=刷卡消費`],
+          ["帶入原始通知文字（可 AI 解析）",`${apiBase}&amount=0&raw=[通知內容變數]&source=信用卡`],
+          ["指定分類與商家",`${apiBase}&amount=320&category=餐飲&note=星巴克`],
         ].map(([l,c])=>(
           <div key={l} style={{marginBottom:10}}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
@@ -807,7 +916,10 @@ create policy "own row" on fin_data
             <code style={S.codeBlock}>{c}</code>
           </div>
         ))}
-        <p style={{fontSize:11,color:"#8E8E93",margin:"4px 0 0"}}>參數：type / category / amount / note / date（YYYY-MM-DD，預設今天）</p>
+        <p style={{fontSize:11,color:"#8E8E93",margin:"4px 0 0",lineHeight:1.6}}>
+          參數：amount 金額／note 備註或商家／category 分類／type 類型（預設 expense）／date 日期／raw 原始通知文字／source 來源。<br/>
+          帶 <code>raw</code> 時可在待確認卡片按「🤖 用 AI 重新解析」自動填好金額與商家。
+        </p>
       </div>
       <div style={{height:100}}/>
     </div>
@@ -1037,6 +1149,13 @@ const S={
   balanceAmt:{margin:"4px 0 14px",fontSize:34,fontWeight:"700"},
   balanceRow:{display:"flex",justifyContent:"space-between"},
   recBanner:{display:"flex",alignItems:"center",background:"#FFF8EE",border:"1px solid #FFE8B0",borderRadius:14,padding:"12px 14px",marginBottom:12,cursor:"pointer",fontSize:14},
+  pendingWrap:{background:"#FFF1F0",border:"1px solid #FFD0CC",borderRadius:16,padding:12,marginBottom:12},
+  pendingHeader:{display:"flex",alignItems:"center",gap:8,marginBottom:8},
+  pendingCount:{background:"#FF3B30",color:"#fff",fontSize:12,fontWeight:"700",minWidth:20,height:20,borderRadius:10,display:"inline-flex",alignItems:"center",justifyContent:"center",padding:"0 6px"},
+  pendingRow:{background:"#fff",borderRadius:12,padding:"12px 14px",marginBottom:8},
+  pendConfirm:{flex:1,padding:"9px",background:"#34C759",color:"#fff",border:"none",borderRadius:9,fontSize:13,fontWeight:"600",cursor:"pointer"},
+  pendEdit:{padding:"9px 14px",background:"#EFF6FF",color:"#007AFF",border:"none",borderRadius:9,fontSize:13,fontWeight:"600",cursor:"pointer"},
+  pendDismiss:{padding:"9px 14px",background:"#F2F2F7",color:"#8E8E93",border:"none",borderRadius:9,fontSize:13,fontWeight:"600",cursor:"pointer"},
   goalBanner:{display:"flex",alignItems:"center",background:"#fff",borderRadius:14,padding:"12px 14px",marginBottom:12,fontSize:14},
   recTotal:{background:"#FFF8EE",borderRadius:16,padding:16,marginBottom:12},
   recRow:{display:"flex",alignItems:"center",gap:10,background:"#fff",borderRadius:14,padding:"12px 14px",marginBottom:6},
