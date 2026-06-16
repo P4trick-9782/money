@@ -117,7 +117,61 @@
 const { useState, useEffect, useRef } = React;
 
 // ── Storage + Encryption ─────────────────────────────────────────
-const KEYS = { txns:"fin_txns", recurring:"fin_recurring", goals:"fin_goals", sync:"fin_sync", pending:"fin_pending" };
+const KEYS = { txns:"fin_txns", recurring:"fin_recurring", goals:"fin_goals", sync:"fin_sync", pending:"fin_pending", assets:"fin_assets", rates:"fin_rates" };
+
+// ── 多貨幣 ──
+const BASE_CCY = "TWD";
+const CURRENCIES = [
+  { code:"TWD", sym:"NT$", name:"台幣" },
+  { code:"USD", sym:"$",   name:"美金" },
+  { code:"JPY", sym:"¥",   name:"日幣" },
+  { code:"KRW", sym:"₩",   name:"韓圜" },
+  { code:"EUR", sym:"€",   name:"歐元" },
+  { code:"CNY", sym:"¥",   name:"人民幣" },
+  { code:"HKD", sym:"HK$", name:"港幣" },
+  { code:"GBP", sym:"£",   name:"英鎊" },
+];
+const CCY_SYM = Object.fromEntries(CURRENCIES.map(c=>[c.code,c.sym]));
+
+// 匯率快取：{ base:"TWD", rates:{USD:0.031,...}, fetchedAt }
+// 換算：金額(該幣別) → TWD。rates 表示「1 TWD = rates[code] 該幣」，故 TWD = amount / rates[code]
+let RATE_CACHE = null;
+async function loadRates(){
+  try{ const r=localStorage.getItem(KEYS.rates); if(r) RATE_CACHE=JSON.parse(r); }catch{}
+  return RATE_CACHE;
+}
+async function fetchRates(){
+  const quotes = CURRENCIES.filter(c=>c.code!==BASE_CCY).map(c=>c.code).join(",");
+  try{
+    // 主來源 Frankfurter（ECB，免金鑰）
+    const res = await fetch(`https://api.frankfurter.app/latest?base=${BASE_CCY}&symbols=${quotes}`);
+    if(!res.ok) throw 0;
+    const data = await res.json();
+    if(!data.rates) throw 0;
+    RATE_CACHE = { base:BASE_CCY, rates:{...data.rates, [BASE_CCY]:1}, fetchedAt:new Date().toISOString() };
+    localStorage.setItem(KEYS.rates, JSON.stringify(RATE_CACHE));
+    return RATE_CACHE;
+  }catch{
+    // 備援來源 fawazahmed0 currency-api（jsDelivr CDN）
+    try{
+      const res2 = await fetch(`https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1/currencies/${BASE_CCY.toLowerCase()}.json`);
+      const d2 = await res2.json();
+      const table = d2[BASE_CCY.toLowerCase()];
+      const rates = { [BASE_CCY]:1 };
+      CURRENCIES.forEach(c=>{ if(c.code!==BASE_CCY && table[c.code.toLowerCase()]!=null) rates[c.code]=table[c.code.toLowerCase()]; });
+      RATE_CACHE = { base:BASE_CCY, rates, fetchedAt:new Date().toISOString() };
+      localStorage.setItem(KEYS.rates, JSON.stringify(RATE_CACHE));
+      return RATE_CACHE;
+    }catch{ return RATE_CACHE; }
+  }
+}
+// 將某幣別金額換算成台幣
+function toTWD(amount, ccy){
+  if(!ccy || ccy===BASE_CCY) return Number(amount)||0;
+  const r = RATE_CACHE?.rates?.[ccy];
+  if(!r) return Number(amount)||0; // 沒匯率時原值返回
+  return (Number(amount)||0) / r;
+}
 const LOCK = { verifier:"fin_lock_v", salt:"fin_lock_salt", fails:"fin_lock_fails", until:"fin_lock_until", bio:"fin_bio_cred", biowrap:"fin_bio_wrap" };
 const PIN_LEN = 6;
 const MAX_FAILS = 5;          // lock out after this many wrong tries
@@ -385,10 +439,22 @@ const TYPE_LABEL = { expense:"支出", income:"收入", saving:"儲蓄", recurri
 const FREQ_LABEL = { monthly:"每月", yearly:"每年", quarterly:"每季" };
 const GOAL_CATS = ["旅遊金","緊急金","買車","買房","教育金","退休金","其他目標"];
 
+// ── 資產類型 ──
+const ASSET_TYPES = [
+  { key:"bank",     label:"銀行存款", icon:"🏦", color:"#007AFF" },
+  { key:"cash",     label:"現金",     icon:"💵", color:"#34C759" },
+  { key:"invest",   label:"投資",     icon:"📈", color:"#FF9500" },
+  { key:"realestate",label:"不動產",  icon:"🏠", color:"#5856D6" },
+  { key:"insurance",label:"保單價值", icon:"🛡", color:"#FF2D55" },
+  { key:"other",    label:"其他資產", icon:"💎", color:"#8E8E93" },
+];
+const ASSET_META = Object.fromEntries(ASSET_TYPES.map(a=>[a.key,a]));
+
 function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2); }
 function today(){ return new Date().toISOString().slice(0,10); }
 function fmtDate(d){ const t=new Date(d); return `${t.getMonth()+1}/${t.getDate()}`; }
 function fmtMoney(n){ return Number(n||0).toLocaleString("zh-TW",{maximumFractionDigits:0}); }
+function fmtCcy(n,ccy){ const s=CCY_SYM[ccy]||"NT$"; return `${s} ${fmtMoney(n)}`; }
 
 // monthly-equivalent cost of a recurring item
 function monthlyEquiv(r){
@@ -406,6 +472,8 @@ function App({ onLock }){
   const [recurring,setRec]   = useState([]);
   const [goals,setGoals]     = useState([]);
   const [pending,setPending] = useState([]); // 待確認的刷卡記錄
+  const [assets,setAssets]   = useState([]); // 資產帳戶
+  const [rates,setRates]     = useState(null); // 匯率快取
   const [sync,setSync]       = useState({ url:"", token:"", lastSync:null, autoMins:0 });
   const [modal,setModal]     = useState(null);
   const [toast,setToast]     = useState(null);
@@ -414,9 +482,14 @@ function App({ onLock }){
   const [year,setYear]       = useState(today().slice(0,4));
 
   useEffect(()=>{ (async()=>{
-    const t=await load(KEYS.txns), r=await load(KEYS.recurring), g=await load(KEYS.goals), s=await load(KEYS.sync), p=await load(KEYS.pending);
-    if(t)setTxns(t); if(r)setRec(r); if(g)setGoals(g); if(s)setSync(s); if(p)setPending(p);
+    const t=await load(KEYS.txns), r=await load(KEYS.recurring), g=await load(KEYS.goals), s=await load(KEYS.sync), p=await load(KEYS.pending), a=await load(KEYS.assets);
+    if(t)setTxns(t); if(r)setRec(r); if(g)setGoals(g); if(s)setSync(s); if(p)setPending(p); if(a)setAssets(a);
+    // 匯率：先載快取顯示，再背景更新
+    const cached=await loadRates(); if(cached)setRates(cached);
     setLoaded(true);
+    // 若無快取或快取超過 6 小時，背景抓新匯率
+    const stale = !cached || (Date.now()-new Date(cached.fetchedAt).getTime() > 6*3600*1000);
+    if(stale){ fetchRates().then(rt=>{ if(rt)setRates({...rt}); }); }
     // 捷徑帶入的刷卡資料：解析網址參數，存成待確認
     try{
       const sp=new URLSearchParams(window.location.search);
@@ -426,6 +499,7 @@ function App({ onLock }){
           type:sp.get("type")||"expense",
           category:sp.get("category")||"其他",
           amount:Number(sp.get("amount"))||0,
+          ccy:sp.get("ccy")||BASE_CCY,
           note:sp.get("note")||sp.get("merchant")||"刷卡消費",
           date:sp.get("date")||today(),
           raw:sp.get("raw")||"",          // 原始通知文字（供 AI 解析）
@@ -444,8 +518,15 @@ function App({ onLock }){
   useEffect(()=>{ if(loaded)save(KEYS.goals,goals); },[goals,loaded]);
   useEffect(()=>{ if(loaded)save(KEYS.sync,sync); },[sync,loaded]);
   useEffect(()=>{ if(loaded)save(KEYS.pending,pending); },[pending,loaded]);
+  useEffect(()=>{ if(loaded)save(KEYS.assets,assets); },[assets,loaded]);
 
   const showToast=(msg,type="success")=>{ setToast({msg,type}); setTimeout(()=>setToast(null),2500); };
+
+  // 資產帳戶 CRUD
+  const addAsset=(a)=>{ setAssets(p=>[{...a,id:uid()},...p]); showToast("資產已新增 ✓"); };
+  const updateAsset=(id,patch)=>setAssets(p=>p.map(a=>a.id===id?{...a,...patch}:a));
+  const delAsset=(id)=>{ setAssets(p=>p.filter(a=>a.id!==id)); showToast("已刪除","warn"); };
+  const refreshRates=async()=>{ showToast("更新匯率中…"); const rt=await fetchRates(); if(rt){ setRates({...rt}); showToast("匯率已更新 ✓"); } else showToast("匯率更新失敗","warn"); };
 
   // 待確認：核可 → 寫入正式記帳；忽略 → 移除
   const confirmPending=(entry)=>{
@@ -471,13 +552,13 @@ function App({ onLock }){
     showToast("CSV 已匯出");
   };
   const exportJSON=()=>{
-    dl(JSON.stringify({txns,recurring,goals},null,2),"記帳備份.json","application/json");
+    dl(JSON.stringify({txns,recurring,goals,assets},null,2),"記帳備份.json","application/json");
     showToast("JSON 備份已匯出");
   };
   const importJSON=(data)=>{
     if(data.txns)setTxns(data.txns);
     if(data.recurring)setRec(data.recurring);
-    if(data.goals)setGoals(data.goals);
+    if(data.goals)setGoals(data.goals); if(data.assets)setAssets(data.assets);
     showToast("資料已匯入 ✓");
   };
 
@@ -488,7 +569,7 @@ function App({ onLock }){
     if(!silent)showToast("加密上傳中…");
     try{
       // encrypt the whole payload locally; cloud only stores ciphertext
-      const blob = await e2eeEncrypt(sync.token, {txns,recurring,goals});
+      const blob = await e2eeEncrypt(sync.token, {txns,recurring,goals,assets});
       await fetch(sync.url,{ method:"POST", mode:"no-cors",
         headers:{"Content-Type":"text/plain;charset=utf-8"},
         body:JSON.stringify({ action:"push", token:sync.token, enc:blob }) });
@@ -512,7 +593,7 @@ function App({ onLock }){
       catch{ showToast("解密失敗，密鑰不符","warn"); return; }
       if(obj.txns)setTxns(obj.txns);
       if(obj.recurring)setRec(obj.recurring);
-      if(obj.goals)setGoals(obj.goals);
+      if(obj.goals)setGoals(obj.goals); if(obj.assets)setAssets(obj.assets);
       setSync(s=>({...s,lastSync:new Date().toISOString()}));
       showToast("已從雲端下載並解密 🔐");
     }catch{ showToast("下載失敗，請檢查網址","warn"); }
@@ -541,7 +622,7 @@ function App({ onLock }){
     if(!sync.token){ if(!silent)showToast("請先設定加密密鑰","warn"); return false; }
     if(!silent)showToast("加密上傳到 Supabase…");
     try{
-      const blob=await e2eeEncrypt(sync.token,{txns,recurring,goals});
+      const blob=await e2eeEncrypt(sync.token,{txns,recurring,goals,assets});
       await sbPush(blob);
       setSync(s=>({...s,lastSync:new Date().toISOString()}));
       if(!silent)showToast("已上傳到 Supabase 🔐"); else { setToast({msg:"已自動備份 ☁️",type:"success"}); setTimeout(()=>setToast(null),1500); }
@@ -558,7 +639,7 @@ function App({ onLock }){
       let obj; try{ obj=await e2eeDecrypt(sync.token,blob); }catch{ showToast("解密失敗，密鑰不符","warn"); return; }
       if(obj.txns)setTxns(obj.txns);
       if(obj.recurring)setRec(obj.recurring);
-      if(obj.goals)setGoals(obj.goals);
+      if(obj.goals)setGoals(obj.goals); if(obj.assets)setAssets(obj.assets);
       setSync(s=>({...s,lastSync:new Date().toISOString()}));
       showToast("已從 Supabase 下載並解密 🔐");
     }catch(e){ showToast(e.message||"下載失敗","warn"); }
@@ -594,7 +675,7 @@ function App({ onLock }){
 
   if(!loaded) return <div style={S.loadWrap}><div style={S.spinner}/><p style={{color:"#8E8E93",marginTop:12,fontSize:14}}>載入中…</p></div>;
 
-  const TAB_ORDER=["home","txns","recurring","goals","stats","more"];
+  const TAB_ORDER=["home","txns","recurring","goals","assets","stats","more"];
   const changeTab=(next)=>{
     const dir = TAB_ORDER.indexOf(next) >= TAB_ORDER.indexOf(tab) ? "right" : "left";
     setTabDir(dir); setTab(next);
@@ -610,6 +691,7 @@ function App({ onLock }){
         {tab==="txns"     && <Txns {...{txns,delTx,month,setMonth}}/>}
         {tab==="recurring"&& <Recurring {...{recurring,delRec,setModal}}/>}
         {tab==="goals"    && <Goals {...{goals,delGoal,updateGoal,setModal}}/>}
+        {tab==="assets"   && <Assets {...{assets,updateAsset,delAsset,setModal,rates,refreshRates,recurring}}/>}
         {tab==="stats"    && <Stats {...{txns,recurring,month,setMonth,year,setYear}}/>}
         {tab==="more"     && <More {...{exportCSV,exportJSON,importJSON,sync,setSync,pushCloud,pullCloud,showToast,onLock,sbUser,sbLogin,sbLogout,sbUpload,sbDownload}}/>}
         </div>
@@ -617,18 +699,19 @@ function App({ onLock }){
       <TabBar tab={tab} setTab={changeTab}/>
       <button style={S.fab} className="anim-fab" onClick={()=>setModal("add")}>＋</button>
 
-      {modal==="add"      && <AddModal onAdd={addTx} onClose={()=>setModal(null)} onVoice={()=>setModal("voice")} onReceipt={()=>setModal("receipt")} onCSV={()=>setModal("csv")}/>}
+      {modal==="add"      && <AddModal onAdd={addTx} onClose={()=>setModal(null)} onVoice={()=>setModal("voice")} onReceipt={()=>setModal("receipt")} onCSV={()=>setModal("csv")} rates={rates}/>}
       {modal==="voice"    && <VoiceModal onAdd={addTx} onClose={()=>setModal(null)} showToast={showToast}/>}
       {modal==="receipt"  && <ReceiptModal onAdd={addTx} onClose={()=>setModal(null)} showToast={showToast}/>}
       {modal==="csv"      && <CSVModal onImport={(t)=>{setTxns(p=>[...t,...p]);showToast(`已匯入 ${t.length} 筆`);}} onClose={()=>setModal(null)}/>}
       {modal==="recurring"&& <RecurringModal onAdd={addRec} onClose={()=>setModal(null)}/>}
       {modal==="goal"     && <GoalModal onAdd={addGoal} onClose={()=>setModal(null)}/>}
+      {modal==="asset"    && <AssetModal onAdd={addAsset} onClose={()=>setModal(null)}/>}
 
       {toast && <div className="anim-toast" style={{...S.toast,background:toast.type==="warn"?"#FF9500":"#34C759"}}>{toast.msg}</div>}
     </div>
   );
 }
-function sum(arr,type){ return arr.filter(t=>t.type===type).reduce((s,t)=>s+Number(t.amount),0); }
+function sum(arr,type){ return arr.filter(t=>t.type===type).reduce((s,t)=>s+toTWD(Number(t.amount),t.ccy),0); }
 function dl(content,name,type){ const b=new Blob([content],{type:type+";charset=utf-8;"}); const u=URL.createObjectURL(b); const a=document.createElement("a"); a.href=u; a.download=name; a.click(); }
 
 // ══════════════ HOME ══════════════════════════════════════════════
@@ -863,6 +946,131 @@ function Goals({goals,delGoal,updateGoal,setModal}){
       <button style={S.addRecBtn} onClick={()=>setModal("goal")}>＋ 新增存款目標</button>
       <div style={{height:100}}/>
     </div>
+  );
+}
+
+// ══════════════ ASSETS (資產) ═════════════════════════════════════
+function Assets({assets,updateAsset,delAsset,setModal,rates,refreshRates,recurring}){
+  const [editId,setEditId]=useState(null);
+  const [editVal,setEditVal]=useState("");
+
+  // 換算所有資產為台幣加總
+  const totalTWD = assets.reduce((s,a)=>s+toTWD(Number(a.amount),a.ccy),0);
+  // 信用卡/貸款等固定扣款的「負債」概略：這裡僅顯示資產；淨資產 = 資產 - 未來負債不計入，保持單純
+
+  // 依類型分組
+  const byType={};
+  assets.forEach(a=>{ (byType[a.type]=byType[a.type]||[]).push(a); });
+
+  const rateInfo = rates?.fetchedAt ? new Date(rates.fetchedAt).toLocaleDateString("zh-TW") : "尚未取得";
+
+  const startEdit=(a)=>{ setEditId(a.id); setEditVal(String(a.amount)); };
+  const saveEdit=(a)=>{ updateAsset(a.id,{amount:Number(editVal)||0}); setEditId(null); };
+
+  return (
+    <div style={S.tab}>
+      <div style={S.pageTitle}>資產總覽</div>
+
+      {/* 淨資產卡片 */}
+      <div className="anim-card" style={{...S.balanceCard,background:"linear-gradient(135deg,#5856D6 0%,#007AFF 100%)"}}>
+        <p style={S.balanceLabel}>總資產（換算台幣）</p>
+        <p style={{...S.balanceAmt,color:"#fff"}}>NT$ {fmtMoney(totalTWD)}</p>
+        <p style={{margin:0,fontSize:11,color:"rgba(255,255,255,0.75)"}}>共 {assets.length} 項資產 · 匯率更新：{rateInfo}</p>
+      </div>
+
+      {/* 匯率列 */}
+      <div style={S.card}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+          <span style={{fontSize:14,fontWeight:"600"}}>💱 即時匯率（對台幣）</span>
+          <button style={S.smallBtn} onClick={refreshRates}>更新</button>
+        </div>
+        <div style={{display:"flex",flexWrap:"wrap",gap:8}}>
+          {CURRENCIES.filter(c=>c.code!==BASE_CCY).map(c=>{
+            const r=rates?.rates?.[c.code];
+            const twdPer = r ? (1/r) : null; // 1 外幣 = ? 台幣
+            return (
+              <div key={c.code} style={{flex:"1 0 30%",background:"#F2F2F7",borderRadius:10,padding:"8px 10px"}}>
+                <div style={{fontSize:12,color:"#8E8E93"}}>{c.name} {c.code}</div>
+                <div style={{fontSize:14,fontWeight:"600"}}>{twdPer?`${twdPer.toFixed(2)}`:"—"}</div>
+              </div>
+            );
+          })}
+        </div>
+        <p style={{fontSize:11,color:"#8E8E93",margin:"8px 0 0"}}>資料來源：歐洲央行（每工作日更新一次），用於記帳換算足夠。</p>
+      </div>
+
+      {/* 各類資產 */}
+      {assets.length===0 ? <Empty icon="💎" msg="尚未新增資產，點下方按鈕開始"/> :
+        ASSET_TYPES.filter(t=>byType[t.key]?.length).map(t=>{
+          const items=byType[t.key];
+          const sub=items.reduce((s,a)=>s+toTWD(Number(a.amount),a.ccy),0);
+          return (
+            <div key={t.key} style={{marginBottom:6}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",margin:"12px 2px 6px"}}>
+                <span style={{fontWeight:"600",fontSize:15}}>{t.icon} {t.label}</span>
+                <span style={{fontSize:13,color:"#8E8E93"}}>NT$ {fmtMoney(sub)}</span>
+              </div>
+              {items.map(a=>(
+                <div key={a.id} className="pressable" style={S.assetRow}>
+                  <div style={{flex:1}}>
+                    <p style={{margin:0,fontWeight:"600",fontSize:14}}>{a.name}</p>
+                    <p style={{margin:0,fontSize:11,color:"#8E8E93"}}>
+                      {a.ccy!==BASE_CCY ? `${fmtCcy(a.amount,a.ccy)} ≈ NT$ ${fmtMoney(toTWD(a.amount,a.ccy))}` : `${a.ccy}`}
+                      {a.linkedCard?` · 綁定：${a.linkedCard}`:""}
+                    </p>
+                  </div>
+                  {editId===a.id ? (
+                    <div style={{display:"flex",gap:4,alignItems:"center"}}>
+                      <input style={{...S.inputField,marginBottom:0,width:96}} type="number" value={editVal} onChange={e=>setEditVal(e.target.value)} inputMode="numeric"/>
+                      <button style={S.pendConfirm} onClick={()=>saveEdit(a)}>存</button>
+                    </div>
+                  ) : (
+                    <>
+                      <span style={{fontWeight:"700",fontSize:15,marginRight:8}}>{a.ccy!==BASE_CCY?fmtCcy(a.amount,a.ccy):`NT$ ${fmtMoney(a.amount)}`}</span>
+                      <button style={S.pendEdit} onClick={()=>startEdit(a)}>改</button>
+                      <button style={S.delBtn} onClick={()=>delAsset(a.id)}>✕</button>
+                    </>
+                  )}
+                </div>
+              ))}
+            </div>
+          );
+        })
+      }
+      <button style={S.addRecBtn} onClick={()=>setModal("asset")}>＋ 新增資產帳戶</button>
+      <div style={{height:100}}/>
+    </div>
+  );
+}
+
+function AssetModal({onAdd,onClose}){
+  const [type,setType]=useState("bank");
+  const [name,setName]=useState("");
+  const [amount,setAmount]=useState("");
+  const [ccy,setCcy]=useState(BASE_CCY);
+  const [linkedCard,setLinkedCard]=useState("");
+  const submit=()=>{ if(!name||amount==="") return; onAdd({type,name,amount:Number(amount)||0,ccy,linkedCard:linkedCard||null}); onClose(); };
+  return (
+    <Modal title="新增資產帳戶" onClose={onClose}>
+      <label style={S.label}>類型</label>
+      <div style={S.catGrid}>
+        {ASSET_TYPES.map(t=>(<button key={t.key} style={{...S.catBtn,...(type===t.key?{background:t.color,color:"#fff",borderColor:t.color}:{})}} onClick={()=>setType(t.key)}>{t.icon} {t.label}</button>))}
+      </div>
+      <label style={S.label}>名稱</label>
+      <input style={S.inputField} placeholder={type==="bank"?"如：玉山銀行 活存":type==="invest"?"如：台積電股票":"名稱"} value={name} onChange={e=>setName(e.target.value)}/>
+      <label style={S.label}>幣別</label>
+      <div style={S.catGrid}>
+        {CURRENCIES.map(c=>(<button key={c.code} style={{...S.catBtn,...(ccy===c.code?{background:"#007AFF",color:"#fff",borderColor:"#007AFF"}:{})}} onClick={()=>setCcy(c.code)}>{c.sym} {c.code}</button>))}
+      </div>
+      <label style={S.label}>金額 / 現值</label>
+      <div style={S.amtRow}><span style={S.amtCur}>{CCY_SYM[ccy]||"NT$"}</span><input style={S.amtInput} type="number" placeholder="0" value={amount} onChange={e=>setAmount(e.target.value)} inputMode="numeric"/></div>
+      {type==="bank" && (<>
+        <label style={S.label}>綁定信用卡自動扣繳（可選）</label>
+        <input style={S.inputField} placeholder="如：中信卡、國泰卡" value={linkedCard} onChange={e=>setLinkedCard(e.target.value)}/>
+        <div style={S.hintBox}>💡 綁定後，這個帳戶會標示為某張卡的扣款來源，方便你追蹤自動扣繳。實際的每月扣款金額請到「固定」分頁設定。</div>
+      </>)}
+      <button style={S.primaryBtn} onClick={submit}>儲存</button>
+    </Modal>
   );
 }
 
@@ -1204,15 +1412,17 @@ function doPost(e){
 }
 
 // ══════════════ MODALS ════════════════════════════════════════════
-function AddModal({onAdd,onClose,onVoice,onReceipt,onCSV}){
+function AddModal({onAdd,onClose,onVoice,onReceipt,onCSV,rates}){
   const [type,setType]=useState("expense");
   const [category,setCategory]=useState("");
   const [amount,setAmount]=useState("");
+  const [ccy,setCcy]=useState(BASE_CCY);
   const [note,setNote]=useState("");
   const [date,setDate]=useState(today());
   const cats=DEFAULT_CATS[type]||[];
   useEffect(()=>{ setCategory(cats[0]||""); },[type]);
-  const submit=()=>{ if(!amount||isNaN(Number(amount)))return; onAdd({type,category,amount:Number(amount),note,date}); onClose(); };
+  const submit=()=>{ if(!amount||isNaN(Number(amount)))return; onAdd({type,category,amount:Number(amount),ccy,note,date}); onClose(); };
+  const twdPreview = ccy!==BASE_CCY && amount ? toTWD(Number(amount),ccy) : null;
   return (
     <Modal title="新增記帳" onClose={onClose}>
       <div style={S.typeRow}>
@@ -1222,8 +1432,11 @@ function AddModal({onAdd,onClose,onVoice,onReceipt,onCSV}){
       </div>
       <label style={S.label}>分類</label>
       <div style={S.catGrid}>{cats.map(c=>(<button key={c} style={{...S.catBtn,...(category===c?{background:TYPE_COLOR[type].bg,color:"#fff",borderColor:TYPE_COLOR[type].bg}:{})}} onClick={()=>setCategory(c)}>{ICONS[c]||"📦"} {c}</button>))}</div>
+      <label style={S.label}>幣別</label>
+      <div style={S.catGrid}>{CURRENCIES.map(c=>(<button key={c.code} style={{...S.catBtn,...(ccy===c.code?{background:"#007AFF",color:"#fff",borderColor:"#007AFF"}:{})}} onClick={()=>setCcy(c.code)}>{c.sym} {c.code}</button>))}</div>
       <label style={S.label}>金額</label>
-      <div style={S.amtRow}><span style={S.amtCur}>NT$</span><input style={S.amtInput} type="number" placeholder="0" value={amount} onChange={e=>setAmount(e.target.value)} inputMode="numeric"/></div>
+      <div style={S.amtRow}><span style={S.amtCur}>{CCY_SYM[ccy]||"NT$"}</span><input style={S.amtInput} type="number" placeholder="0" value={amount} onChange={e=>setAmount(e.target.value)} inputMode="numeric"/></div>
+      {twdPreview!=null && <div style={S.hintBox}>≈ 換算台幣 NT$ {fmtMoney(twdPreview)}（依目前匯率）</div>}
       <label style={S.label}>日期</label>
       <input style={S.inputField} type="date" value={date} onChange={e=>setDate(e.target.value)}/>
       <label style={S.label}>備註（可選）</label>
@@ -1378,16 +1591,18 @@ function CSVModal({onImport,onClose}){
 // ══════════════ SHARED COMPONENTS ════════════════════════════════
 function TxRow({tx,onDelete,showDate}){
   const c=TYPE_COLOR[tx.type]||TYPE_COLOR.expense;
+  const foreign = tx.ccy && tx.ccy!==BASE_CCY;
+  const amtLabel = foreign ? fmtCcy(tx.amount,tx.ccy) : `NT$ ${fmtMoney(tx.amount)}`;
   return (
     <div className="pressable" style={S.txRow}>
       <div style={{...S.txIcon,background:c.light}}><span style={{fontSize:18}}>{ICONS[tx.category]||"📦"}</span></div>
       <div style={{flex:1}}>
         <div style={{display:"flex",justifyContent:"space-between"}}>
           <span style={{fontSize:14,fontWeight:"500"}}>{tx.category}</span>
-          <span style={{fontSize:14,fontWeight:"600",color:tx.type==="income"?"#34C759":"#1C1C1E"}}>{tx.type==="income"?"+":"-"}NT$ {fmtMoney(tx.amount)}</span>
+          <span style={{fontSize:14,fontWeight:"600",color:tx.type==="income"?"#34C759":"#1C1C1E"}}>{tx.type==="income"?"+":"-"}{amtLabel}</span>
         </div>
         <div style={{display:"flex",justifyContent:"space-between",marginTop:2}}>
-          <span style={{fontSize:12,color:"#8E8E93"}}>{tx.note||TYPE_LABEL[tx.type]}</span>
+          <span style={{fontSize:12,color:"#8E8E93"}}>{tx.note||TYPE_LABEL[tx.type]}{foreign?` · ≈NT$${fmtMoney(toTWD(tx.amount,tx.ccy))}`:""}</span>
           <span style={{fontSize:12,color:"#C7C7CC"}}>{showDate?tx.date:fmtDate(tx.date)}</span>
         </div>
       </div>
@@ -1405,7 +1620,7 @@ function MonthNav({current,onChange,mode}){
 function Section({title,sub}){ return <div style={S.sectionHeader}><span style={{fontWeight:"600",fontSize:15}}>{title}</span>{sub&&<span style={{fontSize:12,color:"#8E8E93"}}>{sub}</span>}</div>; }
 function Empty({icon,msg}){ return <div style={S.empty}><span style={{fontSize:40}}>{icon}</span><p style={{color:"#8E8E93",fontSize:14,margin:"8px 0 0"}}>{msg}</p></div>; }
 function TabBar({tab,setTab}){
-  const tabs=[["home","🏠","首頁"],["txns","📋","明細"],["recurring","🔁","固定"],["goals","🎯","目標"],["stats","📊","統計"],["more","☁️","同步"]];
+  const tabs=[["home","🏠","首頁"],["txns","📋","明細"],["recurring","🔁","固定"],["goals","🎯","目標"],["assets","💎","資產"],["stats","📊","統計"],["more","☁️","同步"]];
   return <div style={S.tabBar}>{tabs.map(([id,i,l])=>(<button key={id} style={{...S.tabBtn,...(tab===id?S.tabActive:{})}} onClick={()=>setTab(id)}><span style={{fontSize:19,display:"inline-block",transition:"transform 0.3s var(--ease-spring)",transform:tab===id?"scale(1.18)":"scale(1)"}}>{i}</span><span style={{fontSize:9,marginTop:2,color:tab===id?"#007AFF":"#8E8E93",transition:"color 0.2s ease"}}>{l}</span></button>))}</div>;
 }
 function Modal({title,onClose,children}){
@@ -1444,6 +1659,7 @@ const S={
   goalBanner:{display:"flex",alignItems:"center",background:"#fff",borderRadius:14,padding:"12px 14px",marginBottom:12,fontSize:14},
   recTotal:{background:"#FFF8EE",borderRadius:16,padding:16,marginBottom:12},
   recRow:{display:"flex",alignItems:"center",gap:10,background:"#fff",borderRadius:14,padding:"12px 14px",marginBottom:6},
+  assetRow:{display:"flex",alignItems:"center",gap:6,background:"#fff",borderRadius:12,padding:"10px 12px",marginBottom:5},
   miniLabel:{margin:0,fontSize:12,color:"#8E8E93"},
   bigNum:{margin:"2px 0 0",fontSize:22,fontWeight:"700"},
   quickRow:{display:"flex",gap:8,marginBottom:16},
@@ -1458,7 +1674,7 @@ const S={
   cardTitle:{margin:0,fontSize:14,fontWeight:"600",color:"#3C3C43"},
   empty:{textAlign:"center",padding:"40px 0"},
   tabBar:{position:"fixed",bottom:0,left:"50%",transform:"translateX(-50%)",width:"100%",maxWidth:430,background:"rgba(255,255,255,0.92)",backdropFilter:"blur(20px)",borderTop:"1px solid #E5E5EA",display:"flex",zIndex:100},
-  tabBtn:{flex:1,display:"flex",flexDirection:"column",alignItems:"center",padding:"8px 0 14px",background:"none",border:"none",cursor:"pointer"},
+  tabBtn:{flex:1,display:"flex",flexDirection:"column",alignItems:"center",padding:"7px 0 12px",background:"none",border:"none",cursor:"pointer"},
   tabActive:{color:"#007AFF"},
   fab:{position:"fixed",bottom:80,right:20,width:56,height:56,borderRadius:28,background:"#007AFF",color:"#fff",border:"none",fontSize:28,fontWeight:"300",cursor:"pointer",boxShadow:"0 4px 16px rgba(0,122,255,0.4)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:99},
   overlay:{position:"fixed",inset:0,background:"rgba(0,0,0,0.4)",display:"flex",alignItems:"flex-end",zIndex:200},
