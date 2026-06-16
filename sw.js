@@ -1,4 +1,4 @@
-const CACHE = "fin-app-v2";
+const CACHE = "fin-app-v3";
 const ASSETS = ["./index.html","./manifest.json"];
 self.addEventListener("install", e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(ASSETS)).then(()=>self.skipWaiting()));
@@ -8,14 +8,14 @@ self.addEventListener("activate", e => {
 });
 self.addEventListener("fetch", e => {
   if (e.request.method !== "GET") return;
+  // Network-first: always try network, fallback to cache (ensures updates show immediately)
   e.respondWith(
-    caches.match(e.request).then(cached => cached || fetch(e.request).then(res => {
-      // cache same-origin requests
-      if (e.request.url.startsWith(self.location.origin)) {
+    fetch(e.request).then(res => {
+      if (res.ok && e.request.url.startsWith(self.location.origin)) {
         const copy = res.clone();
         caches.open(CACHE).then(c => c.put(e.request, copy));
       }
       return res;
-    }).catch(()=>caches.match("./index.html")))
+    }).catch(() => caches.match(e.request).then(cached => cached || caches.match("./index.html")))
   );
 });
