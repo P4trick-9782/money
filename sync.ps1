@@ -45,10 +45,13 @@ if ($LASTEXITCODE -ne 0) {
 
 # Push
 Write-Host "[3/3] Pushing to GitHub..." -ForegroundColor Yellow
-git push origin main 2>&1 | Tee-Object -Variable pushOut
-Write-Host $pushOut
+$prev = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
+git push origin main
+$exitCode = $LASTEXITCODE
+$ErrorActionPreference = $prev
 
-if ($LASTEXITCODE -ne 0) {
+if ($exitCode -ne 0) {
     Write-Host "[ERROR] Push failed. Token may have expired." -ForegroundColor Red
     Read-Host "Press Enter to exit"
     exit 1
