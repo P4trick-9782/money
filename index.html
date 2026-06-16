@@ -117,7 +117,7 @@
 const { useState, useEffect, useRef } = React;
 
 // ── Storage + Encryption ─────────────────────────────────────────
-const KEYS = { txns:"fin_txns", recurring:"fin_recurring", goals:"fin_goals", sync:"fin_sync", pending:"fin_pending", assets:"fin_assets", rates:"fin_rates" };
+const KEYS = { txns:"fin_txns", recurring:"fin_recurring", goals:"fin_goals", sync:"fin_sync", pending:"fin_pending", assets:"fin_assets", rates:"fin_rates", binance:"fin_binance" };
 
 // ── 多貨幣 ──
 const BASE_CCY = "TWD";
@@ -475,6 +475,7 @@ function App({ onLock }){
   const [assets,setAssets]   = useState([]); // 資產帳戶
   const [rates,setRates]     = useState(null); // 匯率快取
   const [sync,setSync]       = useState({ url:"", token:"", lastSync:null, autoMins:0 });
+  const [binance,setBinance] = useState({ apiKey:"", apiSecret:"", data:null, lastFetch:null });
   const [modal,setModal]     = useState(null);
   const [toast,setToast]     = useState(null);
   const [loaded,setLoaded]   = useState(false);
@@ -482,8 +483,8 @@ function App({ onLock }){
   const [year,setYear]       = useState(today().slice(0,4));
 
   useEffect(()=>{ (async()=>{
-    const t=await load(KEYS.txns), r=await load(KEYS.recurring), g=await load(KEYS.goals), s=await load(KEYS.sync), p=await load(KEYS.pending), a=await load(KEYS.assets);
-    if(t)setTxns(t); if(r)setRec(r); if(g)setGoals(g); if(s)setSync(s); if(p)setPending(p); if(a)setAssets(a);
+    const t=await load(KEYS.txns), r=await load(KEYS.recurring), g=await load(KEYS.goals), s=await load(KEYS.sync), p=await load(KEYS.pending), a=await load(KEYS.assets), bn=await load(KEYS.binance);
+    if(t)setTxns(t); if(r)setRec(r); if(g)setGoals(g); if(s)setSync(s); if(p)setPending(p); if(a)setAssets(a); if(bn)setBinance(bn);
     // 匯率：先載快取顯示，再背景更新
     const cached=await loadRates(); if(cached)setRates(cached);
     setLoaded(true);
@@ -519,6 +520,7 @@ function App({ onLock }){
   useEffect(()=>{ if(loaded)save(KEYS.sync,sync); },[sync,loaded]);
   useEffect(()=>{ if(loaded)save(KEYS.pending,pending); },[pending,loaded]);
   useEffect(()=>{ if(loaded)save(KEYS.assets,assets); },[assets,loaded]);
+  useEffect(()=>{ if(loaded)save(KEYS.binance,binance); },[binance,loaded]);
 
   const showToast=(msg,type="success")=>{ setToast({msg,type}); setTimeout(()=>setToast(null),2500); };
 
@@ -597,6 +599,24 @@ function App({ onLock }){
       setSync(s=>({...s,lastSync:new Date().toISOString()}));
       showToast("已從雲端下載並解密 🔐");
     }catch{ showToast("下載失敗，請檢查網址","warn"); }
+  };
+
+  // ── Binance 整合 ──
+  const fetchBinance = async () => {
+    if(!binance.apiKey || !binance.apiSecret){ showToast("請先設定 Binance API Key","warn"); return; }
+    showToast("抓取 Binance 資料中…");
+    try{
+      const s = sbSession();
+      const res = await fetch(`${SUPABASE_URL}/functions/v1/binance-proxy`, {
+        method:"POST",
+        headers:{ "Content-Type":"application/json", "apikey":SUPABASE_ANON, "Authorization":`Bearer ${s?.access_token||SUPABASE_ANON}` },
+        body:JSON.stringify({ apiKey:binance.apiKey, apiSecret:binance.apiSecret, type:"both" })
+      });
+      const data = await res.json();
+      if(data.error) throw new Error(data.error);
+      setBinance(b=>({...b, data, lastFetch:new Date().toISOString()}));
+      showToast("Binance 資料已更新 ✓");
+    }catch(e){ showToast(e.message||"抓取失敗","warn"); }
   };
 
   // ── Supabase 後端：登入狀態 ──
@@ -691,9 +711,9 @@ function App({ onLock }){
         {tab==="txns"     && <Txns {...{txns,delTx,month,setMonth}}/>}
         {tab==="recurring"&& <Recurring {...{recurring,delRec,setModal}}/>}
         {tab==="goals"    && <Goals {...{goals,delGoal,updateGoal,setModal}}/>}
-        {tab==="assets"   && <Assets {...{assets,updateAsset,delAsset,setModal,rates,refreshRates,recurring}}/>}
+        {tab==="assets"   && <Assets {...{assets,updateAsset,delAsset,setModal,rates,refreshRates,recurring,binance,fetchBinance}}/>}
         {tab==="stats"    && <Stats {...{txns,recurring,month,setMonth,year,setYear}}/>}
-        {tab==="more"     && <More {...{exportCSV,exportJSON,importJSON,sync,setSync,pushCloud,pullCloud,showToast,onLock,sbUser,sbLogin,sbLogout,sbUpload,sbDownload}}/>}
+        {tab==="more"     && <More {...{exportCSV,exportJSON,importJSON,sync,setSync,pushCloud,pullCloud,showToast,onLock,sbUser,sbLogin,sbLogout,sbUpload,sbDownload,binance,setBinance}}/>}
         </div>
       </div>
       <TabBar tab={tab} setTab={changeTab}/>
@@ -950,7 +970,54 @@ function Goals({goals,delGoal,updateGoal,setModal}){
 }
 
 // ══════════════ ASSETS (資產) ═════════════════════════════════════
-function Assets({assets,updateAsset,delAsset,setModal,rates,refreshRates,recurring}){
+function BinanceCard({binance,fetchBinance}){
+  const d = binance.data;
+  const spot = d?.spot;
+  const fut  = d?.futures;
+  const lastFmt = binance.lastFetch ? new Date(binance.lastFetch).toLocaleString("zh-TW",{month:"numeric",day:"numeric",hour:"2-digit",minute:"2-digit"}) : null;
+  return (
+    <div style={{background:"linear-gradient(135deg,#F0B90B 0%,#FF6B00 100%)",borderRadius:22,padding:16,marginBottom:12,color:"#fff"}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+        <span style={{fontWeight:"700",fontSize:16}}>🟡 Binance</span>
+        <button onClick={fetchBinance} style={{background:"rgba(255,255,255,0.2)",border:"none",borderRadius:12,padding:"5px 12px",color:"#fff",fontSize:12,fontWeight:"600",cursor:"pointer"}}>
+          {d?"重新整理":"立即抓取"}
+        </button>
+      </div>
+      {!binance.apiKey && <p style={{margin:0,fontSize:13,color:"rgba(255,255,255,0.85)"}}>請到「同步」頁面設定 Binance API Key</p>}
+      {binance.apiKey && !d && <p style={{margin:0,fontSize:13,color:"rgba(255,255,255,0.85)"}}>點「立即抓取」載入餘額</p>}
+      {spot && (
+        <div style={{background:"rgba(255,255,255,0.15)",borderRadius:14,padding:"10px 12px",marginBottom:8}}>
+          <p style={{margin:"0 0 4px",fontSize:12,color:"rgba(255,255,255,0.8)"}}>現貨總值</p>
+          <p style={{margin:0,fontSize:22,fontWeight:"700"}}>≈ USDT {spot.totalUsdt.toLocaleString()}</p>
+          <div style={{marginTop:6,display:"flex",flexWrap:"wrap",gap:4}}>
+            {spot.balances.slice(0,6).map(b=>(
+              <span key={b.asset} style={{background:"rgba(255,255,255,0.2)",borderRadius:8,padding:"2px 7px",fontSize:11}}>
+                {b.asset} {b.total.toFixed(4)}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+      {fut && (
+        <div style={{background:"rgba(255,255,255,0.15)",borderRadius:14,padding:"10px 12px"}}>
+          <p style={{margin:"0 0 4px",fontSize:12,color:"rgba(255,255,255,0.8)"}}>合約（U 本位）</p>
+          <div style={{display:"flex",justifyContent:"space-between"}}>
+            <div><p style={{margin:0,fontSize:11,color:"rgba(255,255,255,0.7)"}}>錢包餘額</p><p style={{margin:0,fontSize:16,fontWeight:"700"}}>USDT {fut.walletBalance.toLocaleString()}</p></div>
+            <div style={{textAlign:"right"}}>
+              <p style={{margin:0,fontSize:11,color:"rgba(255,255,255,0.7)"}}>未實現盈虧</p>
+              <p style={{margin:0,fontSize:16,fontWeight:"700",color:fut.unrealizedProfit>=0?"#00ff88":"#ff6b6b"}}>
+                {fut.unrealizedProfit>=0?"+":""}{fut.unrealizedProfit.toFixed(2)}
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+      {lastFmt && <p style={{margin:"8px 0 0",fontSize:10,color:"rgba(255,255,255,0.6)"}}>更新：{lastFmt}</p>}
+    </div>
+  );
+}
+
+function Assets({assets,updateAsset,delAsset,setModal,rates,refreshRates,recurring,binance,fetchBinance}){
   const [editId,setEditId]=useState(null);
   const [editVal,setEditVal]=useState("");
 
@@ -977,6 +1044,9 @@ function Assets({assets,updateAsset,delAsset,setModal,rates,refreshRates,recurri
         <p style={{...S.balanceAmt,color:"#fff"}}>NT$ {fmtMoney(totalTWD)}</p>
         <p style={{margin:0,fontSize:11,color:"rgba(255,255,255,0.75)"}}>共 {assets.length} 項資產 · 匯率更新：{rateInfo}</p>
       </div>
+
+      {/* Binance */}
+      <BinanceCard binance={binance} fetchBinance={fetchBinance}/>
 
       {/* 匯率列 */}
       <div style={S.card}>
@@ -1214,9 +1284,12 @@ function SupaLogin({onLogin}){
   );
 }
 
-function More({exportCSV,exportJSON,importJSON,sync,setSync,pushCloud,pullCloud,showToast,onLock,sbUser,sbLogin,sbLogout,sbUpload,sbDownload}){
+function More({exportCSV,exportJSON,importJSON,sync,setSync,pushCloud,pullCloud,showToast,onLock,sbUser,sbLogin,sbLogout,sbUpload,sbDownload,binance,setBinance}){
   const [urlInput,setUrlInput]=useState(sync.url||"");
   const [tokenInput,setTokenInput]=useState(sync.token||"");
+  const [bnKey,setBnKey]=useState(binance.apiKey||"");
+  const [bnSecret,setBnSecret]=useState(binance.apiSecret||"");
+  const [showBnSecret,setShowBnSecret]=useState(false);
   const [showScript,setShowScript]=useState(false);
   const [bioOn,setBioOn]=useState(bioEnabled());
   const fileRef=useRef();
@@ -1406,6 +1479,35 @@ function doPost(e){
           帶 <code>raw</code> 時可在待確認卡片按「🤖 用 AI 重新解析」自動填好金額與商家。
         </p>
       </div>
+
+      {/* ── Binance API 設定 ── */}
+      <div style={S.card}>
+        <p style={{...S.cardTitle,marginBottom:12}}>🟡 Binance 連結</p>
+        <label style={S.label}>API Key</label>
+        <input style={S.inputField} value={bnKey} onChange={e=>setBnKey(e.target.value)} placeholder="貼上 Binance API Key" autoComplete="off"/>
+        <label style={S.label}>API Secret</label>
+        <div style={{position:"relative"}}>
+          <input style={{...S.inputField,paddingRight:48}} type={showBnSecret?"text":"password"} value={bnSecret} onChange={e=>setBnSecret(e.target.value)} placeholder="貼上 API Secret" autoComplete="off"/>
+          <button onClick={()=>setShowBnSecret(v=>!v)} style={{position:"absolute",right:10,top:"50%",transform:"translateY(-50%)",background:"none",border:"none",fontSize:16,cursor:"pointer",color:"#8E8E93"}}>
+            {showBnSecret?"🙈":"👁"}
+          </button>
+        </div>
+        <div style={S.hintBox}>
+          ⚠️ 請在 Binance 建立「唯讀」API Key（僅勾選 Read），不需要提款或交易權限。
+        </div>
+        <button style={{...S.primaryBtn,marginTop:12}} onClick={()=>{
+          setBinance(b=>({...b,apiKey:bnKey,apiSecret:bnSecret}));
+          showToast("Binance API 設定已儲存 ✓");
+        }}>儲存 API 設定</button>
+        {binance.apiKey && (
+          <button style={{...S.smallBtn,marginTop:8,color:"#FF3B30"}} onClick={()=>{
+            setBinance({apiKey:"",apiSecret:"",data:null,lastFetch:null});
+            setBnKey(""); setBnSecret("");
+            showToast("已清除 Binance 設定","warn");
+          }}>清除設定</button>
+        )}
+      </div>
+
       <div style={{height:100}}/>
     </div>
   );
