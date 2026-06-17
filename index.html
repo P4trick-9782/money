@@ -1350,8 +1350,9 @@ function Assets({assets,updateAsset,delAsset,setModal,rates,refreshRates,recurri
   const [editVal,setEditVal]=useState("");
   const [showNW,setShowNW]=useState(false);
 
-  // 換算所有資產為台幣加總
-  const totalTWD = assets.reduce((s,a)=>s+toTWD(Number(a.amount),a.ccy),0);
+  // 換算所有資產為台幣加總（含 Binance 現貨）
+  const binanceUsdt = binance?.data?.spot?.totalUsdt || 0;
+  const totalTWD = assets.reduce((s,a)=>s+toTWD(Number(a.amount),a.ccy),0) + toTWD(binanceUsdt,"USD");
 
   // 依類型分組
   const byType={};
@@ -1435,9 +1436,9 @@ function Assets({assets,updateAsset,delAsset,setModal,rates,refreshRates,recurri
             const r=rates?.rates?.[c.code];
             const twdPer = r ? (1/r) : null; // 1 外幣 = ? 台幣
             return (
-              <div key={c.code} style={{flex:"1 0 30%",background:"#F2F2F7",borderRadius:10,padding:"8px 10px"}}>
-                <div style={{fontSize:12,color:"#8E8E93"}}>{c.name} {c.code}</div>
-                <div style={{fontSize:14,fontWeight:"600"}}>{twdPer?`${twdPer.toFixed(2)}`:"—"}</div>
+              <div key={c.code} style={{flex:"1 0 30%",background:"var(--bg3,#F2F2F7)",borderRadius:10,padding:"8px 10px"}}>
+                <div style={{fontSize:12,color:"var(--sub,#8E8E93)"}}>{c.name} {c.code}</div>
+                <div style={{fontSize:14,fontWeight:"600",color:"var(--text,#000)"}}>{twdPer?`${twdPer.toFixed(2)}`:"—"}</div>
               </div>
             );
           })}
@@ -1777,13 +1778,20 @@ function More({exportCSV,exportJSON,importJSON,sync,setSync,pushCloud,pullCloud,
     setTokenInput(t);
   };
 
+  const [bioModal,setBioModal]=useState(false);
+  const [bioPin,setBioPin]=useState("");
+
   const toggleBio=async()=>{
     if(bioOn){ bioDisable(); setBioOn(false); showToast("已關閉生物辨識"); return; }
     if(!bioSupported()){ showToast("此裝置不支援生物辨識","warn"); return; }
-    const pin=prompt(`請輸入你的 ${PIN_LEN} 位數密碼以啟用生物辨識`);
-    if(!pin) return;
-    try{ await bioRegister(pin); setBioOn(true); showToast("生物辨識已啟用 👤"); }
-    catch(e){ showToast(e.message==="PIN 錯誤"?"密碼錯誤":"啟用失敗或被取消","warn"); }
+    // iOS PWA 封鎖 prompt()，改用 app 內建輸入
+    setBioPin(""); setBioModal(true);
+  };
+  const confirmBioPin=async()=>{
+    setBioModal(false);
+    try{ await bioRegister(bioPin); setBioOn(true); showToast("生物辨識已啟用 👤"); }
+    catch(e){ showToast(e.message==="PIN 錯誤"?"密碼錯誤，請重試":"啟用失敗，請確認支援 Face ID","warn"); }
+    setBioPin("");
   };
 
   const gasScript=`// 把下面這行的密鑰換成 App 裡「同步密鑰」欄位的同一組字串
@@ -1981,6 +1989,27 @@ function doPost(e){
       </div>
 
       <div style={{height:100}}/>
+
+      {/* 生物辨識啟用 PIN 輸入彈窗（iOS PWA 不支援 prompt()） */}
+      {bioModal && (
+        <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.55)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:500}} onClick={()=>setBioModal(false)}>
+          <div style={{background:"var(--bg,#F2F2F7)",borderRadius:24,padding:24,width:280,textAlign:"center"}} onClick={e=>e.stopPropagation()}>
+            <p style={{fontSize:16,fontWeight:"700",margin:"0 0 6px",color:"var(--text,#000)"}}>👤 啟用生物辨識</p>
+            <p style={{fontSize:13,color:"var(--sub,#8E8E93)",margin:"0 0 16px"}}>請輸入 {PIN_LEN} 位數 App 密碼確認</p>
+            <input
+              type="password" inputMode="numeric" maxLength={PIN_LEN} autoFocus
+              style={{...S.inputField,textAlign:"center",fontSize:22,letterSpacing:8,marginBottom:16}}
+              value={bioPin} onChange={e=>setBioPin(e.target.value.replace(/\D/g,"").slice(0,PIN_LEN))}
+              onKeyDown={e=>{ if(e.key==="Enter" && bioPin.length===PIN_LEN) confirmBioPin(); }}
+              placeholder="••••••"
+            />
+            <div style={{display:"flex",gap:8}}>
+              <button style={{...S.smallBtn,flex:1}} onClick={()=>setBioModal(false)}>取消</button>
+              <button style={{...S.primaryBtn,flex:1,marginTop:0}} disabled={bioPin.length!==PIN_LEN} onClick={confirmBioPin}>確認並啟用</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -2226,26 +2255,26 @@ const S={
   pendingWrap:{background:"#FFF1F0",border:"1px solid #FFD0CC",borderRadius:22,padding:12,marginBottom:12},
   pendingHeader:{display:"flex",alignItems:"center",gap:8,marginBottom:8},
   pendingCount:{background:"#FF3B30",color:"#fff",fontSize:12,fontWeight:"700",minWidth:20,height:20,borderRadius:10,display:"inline-flex",alignItems:"center",justifyContent:"center",padding:"0 6px"},
-  pendingRow:{background:"#fff",borderRadius:18,padding:"12px 14px",marginBottom:8},
+  pendingRow:{background:"var(--card,#fff)",borderRadius:18,padding:"12px 14px",marginBottom:8},
   pendConfirm:{flex:1,padding:"9px",background:"#34C759",color:"#fff",border:"none",borderRadius:14,fontSize:13,fontWeight:"600",cursor:"pointer"},
   pendEdit:{padding:"9px 14px",background:"#EFF6FF",color:"#007AFF",border:"none",borderRadius:14,fontSize:13,fontWeight:"600",cursor:"pointer"},
   pendDismiss:{padding:"9px 14px",background:"#F2F2F7",color:"#8E8E93",border:"none",borderRadius:14,fontSize:13,fontWeight:"600",cursor:"pointer"},
-  goalBanner:{display:"flex",alignItems:"center",background:"#fff",borderRadius:20,padding:"12px 14px",marginBottom:12,fontSize:14},
-  recTotal:{background:"#FFF8EE",borderRadius:22,padding:16,marginBottom:12},
+  goalBanner:{display:"flex",alignItems:"center",background:"var(--card,#fff)",borderRadius:20,padding:"12px 14px",marginBottom:12,fontSize:14},
+  recTotal:{background:"var(--card,#FFF8EE)",borderRadius:22,padding:16,marginBottom:12},
   recRow:{display:"flex",alignItems:"center",gap:10,background:"var(--card,#fff)",borderRadius:24,padding:"12px 14px",marginBottom:6},
   assetRow:{display:"flex",alignItems:"center",gap:6,background:"var(--card,#fff)",borderRadius:18,padding:"10px 12px",marginBottom:5},
   miniLabel:{margin:0,fontSize:12,color:"#8E8E93"},
   bigNum:{margin:"2px 0 0",fontSize:22,fontWeight:"700"},
   quickRow:{display:"flex",gap:8,marginBottom:16},
   quickBtn:{flex:1,display:"flex",flexDirection:"column",alignItems:"center",background:"var(--card,#fff)",border:"none",borderRadius:28,padding:"12px 8px",cursor:"pointer",gap:4},
-  quickLabel:{fontSize:10,color:"#3C3C43",fontWeight:"500"},
+  quickLabel:{fontSize:10,color:"var(--text2,#3C3C43)",fontWeight:"500"},
   sectionHeader:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8,marginTop:8},
   txRow:{display:"flex",alignItems:"center",gap:10,background:"var(--card,#fff)",borderRadius:24,padding:"12px 14px",marginBottom:6},
   txIcon:{width:40,height:40,borderRadius:14,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0},
   monthNav:{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"12px 0",marginBottom:8},
   navArrow:{background:"none",border:"none",fontSize:22,color:"#007AFF",cursor:"pointer",padding:"0 8px"},
   card:{background:"var(--card,#fff)",borderRadius:28,padding:16,marginBottom:12},
-  cardTitle:{margin:0,fontSize:14,fontWeight:"600",color:"#3C3C43"},
+  cardTitle:{margin:0,fontSize:14,fontWeight:"600",color:"var(--text2,#3C3C43)"},
   empty:{textAlign:"center",padding:"40px 0"},
   tabBar:{position:"fixed",bottom:0,left:"50%",transform:"translateX(-50%)",width:"100%",maxWidth:430,background:"var(--tabbar-bg,rgba(255,255,255,0.92))",backdropFilter:"blur(20px)",borderTop:"1px solid var(--sep,#E5E5EA)",display:"flex",paddingBottom:"env(safe-area-inset-bottom)",zIndex:100},
   tabBtn:{flex:1,display:"flex",flexDirection:"column",alignItems:"center",padding:"7px 0 12px",background:"none",border:"none",cursor:"pointer"},
@@ -2254,43 +2283,43 @@ const S={
   overlay:{position:"fixed",inset:0,background:"rgba(0,0,0,0.4)",display:"flex",alignItems:"flex-end",zIndex:200},
   sheet:{background:"var(--bg,#F2F2F7)",borderRadius:"44px 44px 0 0",width:"100%",maxWidth:430,margin:"0 auto",padding:"0 16px",paddingBottom:34},
   handle:{width:36,height:4,background:"#C7C7CC",borderRadius:2,margin:"8px auto 0"},
-  modalHeader:{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"12px 0",borderBottom:"1px solid #E5E5EA",marginBottom:16},
+  modalHeader:{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"12px 0",borderBottom:"1px solid var(--sep,#E5E5EA)",marginBottom:16},
   closeBtn:{background:"none",border:"none",fontSize:16,color:"#8E8E93",cursor:"pointer",padding:"4px 8px"},
   typeRow:{display:"flex",gap:6,marginBottom:8},
-  typeBtn:{flex:1,padding:"8px 4px",borderRadius:14,border:"1.5px solid #E5E5EA",background:"#fff",fontSize:13,fontWeight:"500",cursor:"pointer"},
-  label:{fontSize:12,fontWeight:"600",color:"#8E8E93",textTransform:"uppercase",letterSpacing:0.5,display:"block",marginBottom:6,marginTop:12},
+  typeBtn:{flex:1,padding:"8px 4px",borderRadius:14,border:"1.5px solid var(--sep,#E5E5EA)",background:"var(--card,#fff)",fontSize:13,fontWeight:"500",cursor:"pointer",color:"var(--text2,#3C3C43)"},
+  label:{fontSize:12,fontWeight:"600",color:"var(--sub,#8E8E93)",textTransform:"uppercase",letterSpacing:0.5,display:"block",marginBottom:6,marginTop:12},
   catGrid:{display:"flex",flexWrap:"wrap",gap:6,marginBottom:4},
-  catBtn:{padding:"6px 10px",borderRadius:14,border:"1.5px solid #E5E5EA",background:"#fff",fontSize:12,cursor:"pointer",color:"#3C3C43"},
-  amtRow:{display:"flex",alignItems:"center",background:"#fff",borderRadius:16,border:"1.5px solid #E5E5EA",overflow:"hidden",marginBottom:4},
-  amtCur:{padding:"12px",fontSize:16,color:"#8E8E93",borderRight:"1px solid #E5E5EA"},
-  amtInput:{flex:1,padding:12,fontSize:22,fontWeight:"600",border:"none",outline:"none",background:"transparent",width:"100%"},
-  inputField:{width:"100%",padding:12,borderRadius:22,border:"1.5px solid #E5E5EA",background:"#fff",fontSize:15,outline:"none",boxSizing:"border-box",marginBottom:4},
+  catBtn:{padding:"6px 10px",borderRadius:14,border:"1.5px solid var(--sep,#E5E5EA)",background:"var(--card,#fff)",fontSize:12,cursor:"pointer",color:"var(--text2,#3C3C43)"},
+  amtRow:{display:"flex",alignItems:"center",background:"var(--card,#fff)",borderRadius:16,border:"1.5px solid var(--sep,#E5E5EA)",overflow:"hidden",marginBottom:4},
+  amtCur:{padding:"12px",fontSize:16,color:"var(--sub,#8E8E93)",borderRight:"1px solid var(--sep,#E5E5EA)"},
+  amtInput:{flex:1,padding:12,fontSize:22,fontWeight:"600",border:"none",outline:"none",background:"transparent",width:"100%",color:"var(--text,#000)"},
+  inputField:{width:"100%",padding:12,borderRadius:22,border:"1.5px solid var(--sep,#E5E5EA)",background:"var(--card,#fff)",fontSize:15,outline:"none",boxSizing:"border-box",marginBottom:4,color:"var(--text,#000)"},
   primaryBtn:{width:"100%",padding:14,background:"#007AFF",color:"#fff",border:"none",borderRadius:26,fontSize:16,fontWeight:"600",cursor:"pointer",marginTop:16},
-  smallBtn:{padding:"8px 16px",background:"#F2F2F7",color:"#007AFF",border:"none",borderRadius:14,fontSize:13,fontWeight:"600",cursor:"pointer"},
-  chipBtn:{padding:"7px 12px",background:"#fff",color:"#3C3C43",border:"1.5px solid #E5E5EA",borderRadius:18,fontSize:13,fontWeight:"500",cursor:"pointer"},
+  smallBtn:{padding:"8px 16px",background:"var(--bg3,#F2F2F7)",color:"#007AFF",border:"none",borderRadius:14,fontSize:13,fontWeight:"600",cursor:"pointer"},
+  chipBtn:{padding:"7px 12px",background:"var(--card,#fff)",color:"var(--text2,#3C3C43)",border:"1.5px solid var(--sep,#E5E5EA)",borderRadius:18,fontSize:13,fontWeight:"500",cursor:"pointer"},
   altRow:{display:"flex",alignItems:"center",gap:8,marginTop:12,flexWrap:"wrap"},
-  altBtn:{padding:"6px 12px",background:"#F2F2F7",border:"none",borderRadius:14,fontSize:12,cursor:"pointer",color:"#007AFF",fontWeight:"500"},
+  altBtn:{padding:"6px 12px",background:"var(--bg3,#F2F2F7)",border:"none",borderRadius:14,fontSize:12,cursor:"pointer",color:"#007AFF",fontWeight:"500"},
   voiceBtn:{padding:"16px 40px",borderRadius:30,border:"none",color:"#fff",fontSize:16,fontWeight:"600",cursor:"pointer"},
-  transcriptBox:{background:"#F2F2F7",borderRadius:16,padding:12,fontSize:13,lineHeight:1.6,marginBottom:12},
+  transcriptBox:{background:"var(--bg3,#F2F2F7)",borderRadius:16,padding:12,fontSize:13,lineHeight:1.6,marginBottom:12,color:"var(--text2,#3C3C43)"},
   filterRow:{display:"flex",gap:6,marginBottom:12,overflowX:"auto",paddingBottom:4},
-  filterBtn:{padding:"6px 14px",borderRadius:20,border:"1.5px solid #E5E5EA",background:"#fff",fontSize:13,cursor:"pointer",whiteSpace:"nowrap",color:"#3C3C43"},
+  filterBtn:{padding:"6px 14px",borderRadius:20,border:"1.5px solid var(--sep,#E5E5EA)",background:"var(--card,#fff)",fontSize:13,cursor:"pointer",whiteSpace:"nowrap",color:"var(--text2,#3C3C43)"},
   filterActive:{background:"#007AFF",color:"#fff",borderColor:"#007AFF"},
-  addRecBtn:{width:"100%",padding:14,background:"#fff",color:"#007AFF",border:"1.5px dashed #007AFF",borderRadius:18,fontSize:15,fontWeight:"600",cursor:"pointer",marginTop:8},
+  addRecBtn:{width:"100%",padding:14,background:"var(--card,#fff)",color:"#007AFF",border:"1.5px dashed #007AFF",borderRadius:18,fontSize:15,fontWeight:"600",cursor:"pointer",marginTop:8},
   delBtn:{background:"none",border:"none",fontSize:14,color:"#C7C7CC",cursor:"pointer",padding:4,marginLeft:4},
   catIcon:{fontSize:22,width:36,textAlign:"center"},
   hintBox:{background:"#FFF8EE",border:"1px solid #FFE8B0",borderRadius:14,padding:"8px 12px",fontSize:12,color:"#8E5500",marginTop:8},
-  progBg:{height:8,background:"#F2F2F7",borderRadius:4,overflow:"hidden",marginTop:4},
+  progBg:{height:8,background:"var(--bg3,#F2F2F7)",borderRadius:4,overflow:"hidden",marginTop:4},
   progFill:{height:"100%",background:"#34C759",borderRadius:4,transition:"width 0.3s"},
   goalSummary:{background:"var(--card,#fff)",borderRadius:22,padding:16,marginBottom:12},
   goalCard:{background:"var(--card,#fff)",borderRadius:22,padding:16,marginBottom:10},
   depositBtn:{width:"100%",padding:10,background:"#EFF6FF",color:"#007AFF",border:"none",borderRadius:14,fontSize:13,fontWeight:"600",cursor:"pointer",marginTop:10},
   goalActionBtn:{padding:"10px 12px",background:"#34C759",color:"#fff",border:"none",borderRadius:14,fontSize:13,fontWeight:"600",cursor:"pointer",whiteSpace:"nowrap"},
-  viewToggle:{display:"flex",gap:6,background:"#E5E5EA",borderRadius:14,padding:3,marginTop:12},
-  viewBtn:{flex:1,padding:"8px",borderRadius:12,border:"none",background:"transparent",fontSize:14,fontWeight:"600",color:"#8E8E93",cursor:"pointer"},
-  viewBtnActive:{background:"#fff",color:"#1C1C1E",boxShadow:"0 1px 3px rgba(0,0,0,0.1)"},
+  viewToggle:{display:"flex",gap:6,background:"var(--bg3,#E5E5EA)",borderRadius:14,padding:3,marginTop:12},
+  viewBtn:{flex:1,padding:"8px",borderRadius:12,border:"none",background:"transparent",fontSize:14,fontWeight:"600",color:"var(--sub,#8E8E93)",cursor:"pointer"},
+  viewBtnActive:{background:"var(--card,#fff)",color:"var(--text,#1C1C1E)",boxShadow:"0 1px 3px rgba(0,0,0,0.1)"},
   recTotalRow:{},
   goalSummaryRow:{},
-  toolBtn:{padding:"10px 14px",background:"#F2F2F7",color:"#007AFF",border:"none",borderRadius:14,fontSize:13,fontWeight:"600",cursor:"pointer"},
+  toolBtn:{padding:"10px 14px",background:"var(--bg3,#F2F2F7)",color:"#007AFF",border:"none",borderRadius:14,fontSize:13,fontWeight:"600",cursor:"pointer"},
   stepNum:{width:22,height:22,borderRadius:11,background:"#007AFF",color:"#fff",fontSize:12,fontWeight:"700",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,marginTop:1},
   codeBlock:{display:"block",background:"#F2F2F7",borderRadius:12,padding:10,fontSize:11,color:"#3C3C43",wordBreak:"break-all",lineHeight:1.6,whiteSpace:"pre-wrap"},
   copyBtn:{padding:"4px 12px",background:"#007AFF",color:"#fff",border:"none",borderRadius:10,fontSize:12,cursor:"pointer",fontWeight:"500"},
