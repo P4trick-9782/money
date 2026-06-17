@@ -2000,7 +2000,13 @@ function doPost(e){
       {/* 生物辨識啟用 PIN 輸入彈窗（iOS PWA 不支援 prompt()） */}
       {bioModal && (
         <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.55)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:500}} onClick={()=>setBioModal(false)}>
-          <div style              value={bioPin} onChange={e=>setBioPin(e.target.value)}
+          <div style={{background:"var(--bg,#F2F2F7)",borderRadius:24,padding:24,width:280,textAlign:"center"}} onClick={e=>e.stopPropagation()}>
+            <p style={{fontSize:16,fontWeight:"700",margin:"0 0 6px",color:"var(--text,#000)"}}>👤 啟用生物辨識</p>
+            <p style={{fontSize:13,color:"var(--sub,#8E8E93)",margin:"0 0 16px"}}>請輸入 {PIN_LEN} 位數 App 密碼確認</p>
+            <input
+              type="password" inputMode="numeric" maxLength={PIN_LEN} autoFocus
+              style={{...S.inputField,textAlign:"center",fontSize:22,letterSpacing:8,marginBottom:16}}
+              value={bioPin} onChange={e=>setBioPin(e.target.value)}
               onKeyDown={e=>e.key==="Enter"&&bioPin.length===PIN_LEN&&confirmBioPin()}
             />
             <div style={{display:"flex",gap:8}}>
