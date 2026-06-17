@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <title>我的記帳</title>
 <meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="我的記帳">
 <meta name="theme-color" content="#007AFF">
 <link rel="manifest" href="manifest.json">
@@ -1741,7 +1741,7 @@ function Modal({title,onClose,children}){
 const S={
   shell:{fontFamily:"-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif",background:"#F2F2F7",minHeight:"100vh",maxWidth:430,margin:"0 auto",position:"relative",overflowX:"hidden"},
   statusBar:{height:8,background:"#F2F2F7"},
-  content:{paddingBottom:80},
+  content:{paddingBottom:"calc(80px + env(safe-area-inset-bottom))"},
   loadWrap:{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",height:"100vh"},
   spinner:{width:32,height:32,border:"3px solid #E5E5EA",borderTop:"3px solid #007AFF",borderRadius:"50%",animation:"spin 0.8s linear infinite"},
   tab:{padding:"0 16px"},
@@ -1775,7 +1775,7 @@ const S={
   card:{background:"#fff",borderRadius:28,padding:16,marginBottom:12},
   cardTitle:{margin:0,fontSize:14,fontWeight:"600",color:"#3C3C43"},
   empty:{textAlign:"center",padding:"40px 0"},
-  tabBar:{position:"fixed",bottom:0,left:"50%",transform:"translateX(-50%)",width:"100%",maxWidth:430,background:"rgba(255,255,255,0.92)",backdropFilter:"blur(20px)",borderTop:"1px solid #E5E5EA",display:"flex",zIndex:100},
+  tabBar:{position:"fixed",bottom:0,left:"50%",transform:"translateX(-50%)",width:"100%",maxWidth:430,background:"rgba(255,255,255,0.92)",backdropFilter:"blur(20px)",borderTop:"1px solid #E5E5EA",display:"flex",paddingBottom:"env(safe-area-inset-bottom)",zIndex:100},
   tabBtn:{flex:1,display:"flex",flexDirection:"column",alignItems:"center",padding:"7px 0 12px",background:"none",border:"none",cursor:"pointer"},
   tabActive:{color:"#007AFF"},
   fab:{position:"fixed",bottom:80,right:20,width:56,height:56,borderRadius:28,background:"#007AFF",color:"#fff",border:"none",fontSize:28,fontWeight:"300",cursor:"pointer",boxShadow:"0 4px 16px rgba(0,122,255,0.4)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:99},
@@ -1823,7 +1823,7 @@ const S={
   codeBlock:{display:"block",background:"#F2F2F7",borderRadius:12,padding:10,fontSize:11,color:"#3C3C43",wordBreak:"break-all",lineHeight:1.6,whiteSpace:"pre-wrap"},
   copyBtn:{padding:"4px 12px",background:"#007AFF",color:"#fff",border:"none",borderRadius:10,fontSize:12,cursor:"pointer",fontWeight:"500"},
   toast:{position:"fixed",top:60,left:"50%",transform:"translateX(-50%)",padding:"10px 24px",borderRadius:24,color:"#fff",fontWeight:"600",fontSize:14,zIndex:300,boxShadow:"0 4px 16px rgba(0,0,0,0.2)",whiteSpace:"nowrap"},
-  lockWrap:{minHeight:"100vh",maxWidth:430,margin:"0 auto",background:"linear-gradient(160deg,#007AFF 0%,#5856D6 100%)",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:24,boxSizing:"border-box"},
+  lockWrap:{position:"fixed",top:0,left:0,right:0,bottom:0,background:"linear-gradient(160deg,#007AFF 0%,#5856D6 100%)",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:24,paddingTop:"calc(env(safe-area-inset-top) + 24px)",boxSizing:"border-box",zIndex:999},
   lockIcon:{fontSize:52,marginBottom:12},
   lockTitle:{color:"#fff",fontSize:22,fontWeight:"700",margin:"0 0 6px"},
   lockSub:{color:"rgba(255,255,255,0.85)",fontSize:14,margin:"0 0 28px",textAlign:"center",lineHeight:1.5},
