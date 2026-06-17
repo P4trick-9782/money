@@ -106,6 +106,33 @@
   @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after { animation-duration:0.001s !important; animation-delay:0s !important; transition-duration:0.001s !important; }
   }
+
+  /* ── 深色模式 ── */
+  :root {
+    --bg: #F2F2F7;
+    --bg2: #FFFFFF;
+    --bg3: #E5E5EA;
+    --sep: #C6C6C8;
+    --text: #000000;
+    --text2: #3C3C43;
+    --sub: #8E8E93;
+    --card: #FFFFFF;
+    --tabbar-bg: rgba(255,255,255,0.92);
+  }
+  @media (prefers-color-scheme: dark) {
+    body { background:#000 !important; color:#fff !important; }
+    :root {
+      --bg: #000000;
+      --bg2: #1C1C1E;
+      --bg3: #2C2C2E;
+      --sep: #38383A;
+      --text: #FFFFFF;
+      --text2: #EBEBF5;
+      --sub: #8E8E93;
+      --card: #1C1C1E;
+      --tabbar-bg: rgba(28,28,30,0.92);
+    }
+  }
 </style>
 <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
@@ -117,7 +144,7 @@
 const { useState, useEffect, useRef } = React;
 
 // ── Storage + Encryption ─────────────────────────────────────────
-const KEYS = { txns:"fin_txns", recurring:"fin_recurring", goals:"fin_goals", sync:"fin_sync", pending:"fin_pending", assets:"fin_assets", rates:"fin_rates", binance:"fin_binance", invest:"fin_invest" };
+const KEYS = { txns:"fin_txns", recurring:"fin_recurring", goals:"fin_goals", sync:"fin_sync", pending:"fin_pending", assets:"fin_assets", rates:"fin_rates", binance:"fin_binance", invest:"fin_invest", budgets:"fin_budgets", networth:"fin_networth" };
 
 // ── 多貨幣 ──
 const BASE_CCY = "TWD";
@@ -478,6 +505,8 @@ function App({ onLock }){
   const [binance,setBinance] = useState({ apiKey:"", apiSecret:"", data:null, lastFetch:null });
   const [invest,setInvest]   = useState([]);  // 投資持倉
   const [investPrices,setInvestPrices] = useState({}); // 即時報價快取
+  const [budgets,setBudgets] = useState({});  // 分類預算 { 餐飲:5000, ... }
+  const [networth,setNetworth] = useState([]); // 淨資產快照 [{ date, value }]
   const [modal,setModal]     = useState(null);
   const [toast,setToast]     = useState(null);
   const [loaded,setLoaded]   = useState(false);
@@ -485,8 +514,8 @@ function App({ onLock }){
   const [year,setYear]       = useState(today().slice(0,4));
 
   useEffect(()=>{ (async()=>{
-    const t=await load(KEYS.txns), r=await load(KEYS.recurring), g=await load(KEYS.goals), s=await load(KEYS.sync), p=await load(KEYS.pending), a=await load(KEYS.assets), bn=await load(KEYS.binance), iv=await load(KEYS.invest);
-    if(t)setTxns(t); if(r)setRec(r); if(g)setGoals(g); if(s)setSync(s); if(p)setPending(p); if(a)setAssets(a); if(bn)setBinance(bn); if(iv)setInvest(iv);
+    const t=await load(KEYS.txns), r=await load(KEYS.recurring), g=await load(KEYS.goals), s=await load(KEYS.sync), p=await load(KEYS.pending), a=await load(KEYS.assets), bn=await load(KEYS.binance), iv=await load(KEYS.invest), bud=await load(KEYS.budgets), nw=await load(KEYS.networth);
+    if(t)setTxns(t); if(r)setRec(r); if(g)setGoals(g); if(s)setSync(s); if(p)setPending(p); if(a)setAssets(a); if(bn)setBinance(bn); if(iv)setInvest(iv); if(bud)setBudgets(bud); if(nw)setNetworth(nw);
     // 匯率：先載快取顯示，再背景更新
     const cached=await loadRates(); if(cached)setRates(cached);
     setLoaded(true);
@@ -524,6 +553,8 @@ function App({ onLock }){
   useEffect(()=>{ if(loaded)save(KEYS.assets,assets); },[assets,loaded]);
   useEffect(()=>{ if(loaded)save(KEYS.binance,binance); },[binance,loaded]);
   useEffect(()=>{ if(loaded)save(KEYS.invest,invest); },[invest,loaded]);
+  useEffect(()=>{ if(loaded)save(KEYS.budgets,budgets); },[budgets,loaded]);
+  useEffect(()=>{ if(loaded)save(KEYS.networth,networth); },[networth,loaded]);
 
   const showToast=(msg,type="success")=>{ setToast({msg,type}); setTimeout(()=>setToast(null),2500); };
 
@@ -641,6 +672,35 @@ function App({ onLock }){
     }catch(e){ showToast(e.message||"報價抓取失敗","warn"); }
   };
 
+  // ── AI 支出分析 ──
+  const [aiResult,setAiResult] = useState(null);
+  const [aiLoading,setAiLoading] = useState(false);
+  const aiAnalysis = async () => {
+    setAiLoading(true);
+    try {
+      // 取最近 3 個月交易摘要
+      const now = new Date();
+      const months3 = [0,1,2].map(i=>{ const d=new Date(now.getFullYear(),now.getMonth()-i,1); return d.toISOString().slice(0,7); });
+      const recent = txns.filter(t=>months3.some(m=>t.date.startsWith(m)));
+      const catTotals = {};
+      recent.filter(t=>t.type==="expense").forEach(t=>{ catTotals[t.category]=(catTotals[t.category]||0)+Number(t.amount); });
+      const summary = Object.entries(catTotals).sort((a,b)=>b[1]-a[1]).map(([c,v])=>`${c}: NT$${fmtMoney(v)}`).join(", ");
+      const totalExp = Object.values(catTotals).reduce((s,v)=>s+v,0);
+      const totalInc = sum(recent,"income");
+      const prompt = `近3個月消費摘要：總收入NT$${fmtMoney(totalInc)}，總支出NT$${fmtMoney(totalExp)}。各分類：${summary}。請用繁體中文簡短分析消費習慣，並給出2-3個具體節省建議。請控制在150字內。`;
+      const res = await fetch(`${SUPABASE_URL}/functions/v1/ai-analysis`, {
+        method:"POST",
+        headers:{ "Content-Type":"application/json", "apikey":SUPABASE_ANON },
+        body:JSON.stringify({ prompt })
+      });
+      const data = await res.json();
+      if(data.error) throw new Error(data.error);
+      setAiResult(data.result || data.text || JSON.stringify(data));
+    } catch(e) {
+      setAiResult("分析失敗：" + (e.message||"請稍後再試"));
+    } finally { setAiLoading(false); }
+  };
+
   // ── Supabase 後端：登入狀態 ──
   const [sbUser,setSbUser] = useState(sbSession()?.email||null);
 
@@ -729,12 +789,12 @@ function App({ onLock }){
       <div style={S.statusBar}/>
       <div style={S.content}>
         <div key={tab} className={animClass}>
-        {tab==="home"     && <Home {...{mTx,mInc,mExp,mSav,recMonthly,balance,month,setMonth,delTx,setModal,recurring,goals,pending,confirmPending,dismissPending,updatePending,showToast}}/>}
+        {tab==="home"     && <Home {...{mTx,mInc,mExp,mSav,recMonthly,balance,month,setMonth,delTx,setModal,recurring,goals,pending,confirmPending,dismissPending,updatePending,showToast,budgets,txns}}/>}
         {tab==="txns"     && <Txns {...{txns,delTx,month,setMonth}}/>}
         {tab==="recurring"&& <Recurring {...{recurring,delRec,setModal}}/>}
         {tab==="goals"    && <Goals {...{goals,delGoal,updateGoal,setModal}}/>}
-        {tab==="assets"   && <Assets {...{assets,updateAsset,delAsset,setModal,rates,refreshRates,recurring,binance,fetchBinance,invest,setInvest,investPrices,fetchInvestPrices,showToast}}/>}
-        {tab==="stats"    && <Stats {...{txns,recurring,month,setMonth,year,setYear}}/>}
+        {tab==="assets"   && <Assets {...{assets,updateAsset,delAsset,setModal,rates,refreshRates,recurring,binance,fetchBinance,invest,setInvest,investPrices,fetchInvestPrices,showToast,networth,setNetworth}}/>}
+        {tab==="stats"    && <Stats {...{txns,recurring,month,setMonth,year,setYear,budgets,setBudgets,aiAnalysis,aiResult,aiLoading}}/>}
         {tab==="more"     && <More {...{exportCSV,exportJSON,importJSON,sync,setSync,pushCloud,pullCloud,showToast,onLock,sbUser,sbLogin,sbLogout,sbUpload,sbDownload,binance,setBinance}}/>}
         </div>
       </div>
@@ -814,7 +874,7 @@ function PendingRow({entry,onConfirm,onDismiss,onUpdate,showToast}){
 }
 
 // ══════════════ HOME ══════════════════════════════════════════════
-function Home({mTx,mInc,mExp,mSav,recMonthly,balance,month,setMonth,delTx,setModal,goals,pending,confirmPending,dismissPending,updatePending,showToast}){
+function Home({mTx,mInc,mExp,mSav,recMonthly,balance,month,setMonth,delTx,setModal,goals,pending,confirmPending,dismissPending,updatePending,showToast,recurring,budgets,txns}){
   const recent=mTx.slice(0,12);
   const topGoal=goals[0];
   return (
@@ -867,7 +927,45 @@ function Home({mTx,mInc,mExp,mSav,recMonthly,balance,month,setMonth,delTx,setMod
       </div>
       <Section title="近期記錄" sub={mTx.length?`共 ${mTx.length} 筆`:""}/>
       {recent.length===0 ? <Empty icon="📋" msg="本月還沒有記錄，點 ＋ 開始記帳"/> : <div className="stagger">{recent.map(t=><TxRow key={t.id} tx={t} onDelete={delTx}/>)}</div>}
+      {/* 現金流預測 */}
+      <ForecastCard mInc={mInc} mExp={mExp} balance={balance} recurring={recurring} month={month}/>
       <div style={{height:100}}/>
+    </div>
+  );
+}
+
+function ForecastCard({mInc,mExp,balance,recurring,month}){
+  const today_d = new Date();
+  const daysInMonth = new Date(today_d.getFullYear(), today_d.getMonth()+1, 0).getDate();
+  const daysPassed = today_d.getDate();
+  const daysLeft = daysInMonth - daysPassed;
+  // 月均固定支出（月費+年費/12+季費/3）
+  const recMonthly = recurring.reduce((s,r)=>{
+    if(r.type==="income") return s;
+    return s + (r.freq==="yearly"?Number(r.amount)/12:r.freq==="quarterly"?Number(r.amount)/3:Number(r.amount));
+  },0);
+  // 預測：依目前進度推算月底
+  const dailyRate = daysPassed>0 ? mExp/daysPassed : 0;
+  const projectedExp = mExp + dailyRate*daysLeft;
+  const projectedBalance = mInc - projectedExp;
+  if(daysLeft<=0||mInc===0) return null;
+  return (
+    <div style={{...S.card,background:"#F0F8FF",border:"1px solid #BFD9F5"}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+        <span style={{fontSize:14,fontWeight:"600",color:"#007AFF"}}>🔮 月底預測</span>
+        <span style={{fontSize:11,color:"#8E8E93"}}>剩 {daysLeft} 天</span>
+      </div>
+      <div style={{display:"flex",justifyContent:"space-between"}}>
+        <div>
+          <p style={{margin:0,fontSize:11,color:"#8E8E93"}}>預計支出</p>
+          <p style={{margin:"2px 0 0",fontSize:16,fontWeight:"700",color:"#FF3B30"}}>NT${fmtMoney(projectedExp)}</p>
+        </div>
+        <div style={{textAlign:"right"}}>
+          <p style={{margin:0,fontSize:11,color:"#8E8E93"}}>預計結餘</p>
+          <p style={{margin:"2px 0 0",fontSize:16,fontWeight:"700",color:projectedBalance>=0?"#34C759":"#FF3B30"}}>NT${fmtMoney(projectedBalance)}</p>
+        </div>
+      </div>
+      <p style={{margin:"8px 0 0",fontSize:11,color:"#8E8E93"}}>依今月日均支出 NT${fmtMoney(dailyRate)}/天 推算</p>
     </div>
   );
 }
@@ -891,15 +989,23 @@ function Txns({txns,delTx,month,setMonth}){
 }
 
 // ══════════════ RECURRING ═════════════════════════════════════════
+const SUB_CATS=["串流影音","音樂","雲端儲存","軟體","健身","新聞","遊戲","其他訂閱"];
 function Recurring({recurring,delRec,setModal}){
-  const monthly=recurring.filter(r=>r.freq!=="yearly"&&r.freq!=="quarterly");
-  const periodic=recurring.filter(r=>r.freq==="yearly"||r.freq==="quarterly");
+  const [view,setView]=useState("all"); // all | sub | install
   const totalMonthEquiv=recurring.reduce((s,r)=>s+monthlyEquiv(r),0);
   const totalYear=recurring.reduce((s,r)=>{
     if(r.freq==="yearly")return s+Number(r.amount);
     if(r.freq==="quarterly")return s+Number(r.amount)*4;
     return s+Number(r.amount)*12;
   },0);
+  // 分類：訂閱 vs 分期 vs 其他
+  const subs=recurring.filter(r=>r.subType==="subscription"||SUB_CATS.includes(r.category));
+  const installs=recurring.filter(r=>r.subType==="installment"||r.totalMonths>0);
+  const others=recurring.filter(r=>!subs.includes(r)&&!installs.includes(r));
+  const monthly=others.filter(r=>r.freq!=="yearly"&&r.freq!=="quarterly");
+  const periodic=others.filter(r=>r.freq==="yearly"||r.freq==="quarterly");
+
+  const listToShow = view==="sub" ? subs : view==="install" ? installs : null;
   return (
     <div style={S.tab}>
       <div style={S.pageTitle}>固定扣款</div>
@@ -908,14 +1014,66 @@ function Recurring({recurring,delRec,setModal}){
           <div><p style={S.miniLabel}>月均攤</p><p style={{...S.bigNum,color:"#FF9500"}}>NT$ {fmtMoney(totalMonthEquiv)}</p></div>
           <div style={{textAlign:"right"}}><p style={S.miniLabel}>年度總額</p><p style={{...S.bigNum,color:"#FF9500"}}>NT$ {fmtMoney(totalYear)}</p></div>
         </div>
+        <div style={{display:"flex",gap:6,marginTop:12}}>
+          {[["all","全部"],["sub","訂閱"],["install","分期"]].map(([v,l])=>(
+            <button key={v} onClick={()=>setView(v)} style={{flex:1,padding:"6px 0",borderRadius:14,border:"none",fontSize:12,fontWeight:"600",cursor:"pointer",background:view===v?"#007AFF":"#E5E5EA",color:view===v?"#fff":"#3C3C43"}}>{l}</button>
+          ))}
+        </div>
       </div>
       {recurring.length===0 && <Empty icon="🔁" msg="尚未設定固定扣款"/>}
-      {monthly.length>0 && <Section title="每月扣款"/>}
-      {monthly.map(r=><RecRow key={r.id} r={r} onDelete={delRec}/>)}
-      {periodic.length>0 && <Section title="年度 / 季度扣款"/>}
-      {periodic.map(r=><RecRow key={r.id} r={r} onDelete={delRec}/>)}
+      {view==="sub" && (
+        <>
+          {subs.length===0 ? <Empty icon="📱" msg="尚未設定訂閱服務"/> : subs.map(r=><RecRow key={r.id} r={r} onDelete={delRec}/>)}
+        </>
+      )}
+      {view==="install" && (
+        <>
+          {installs.length===0 ? <Empty icon="💳" msg="尚未設定分期付款"/> : installs.map(r=><InstallRow key={r.id} r={r} onDelete={delRec}/>)}
+        </>
+      )}
+      {view==="all" && (
+        <>
+          {subs.length>0 && <Section title={`📱 訂閱服務（${subs.length}）`}/>}
+          {subs.map(r=><RecRow key={r.id} r={r} onDelete={delRec}/>)}
+          {installs.length>0 && <Section title={`💳 分期付款（${installs.length}）`}/>}
+          {installs.map(r=><InstallRow key={r.id} r={r} onDelete={delRec}/>)}
+          {monthly.length>0 && <Section title="每月扣款"/>}
+          {monthly.map(r=><RecRow key={r.id} r={r} onDelete={delRec}/>)}
+          {periodic.length>0 && <Section title="年度 / 季度扣款"/>}
+          {periodic.map(r=><RecRow key={r.id} r={r} onDelete={delRec}/>)}
+        </>
+      )}
       <button style={S.addRecBtn} onClick={()=>setModal("recurring")}>＋ 新增固定扣款</button>
       <div style={{height:100}}/>
+    </div>
+  );
+}
+function InstallRow({r,onDelete}){
+  const paid=r.paidMonths||0;
+  const total=r.totalMonths||12;
+  const pct=Math.min(100,Math.round(paid/total*100));
+  const remaining=total-paid;
+  const remainAmt=remaining*Number(r.amount);
+  return (
+    <div style={{...S.recRow,flexDirection:"column",alignItems:"stretch",gap:8}}>
+      <div style={{display:"flex",alignItems:"center",gap:10}}>
+        <span style={S.catIcon}>{ICONS[r.category]||"💳"}</span>
+        <div style={{flex:1}}>
+          <p style={{margin:0,fontWeight:"600",fontSize:15}}>{r.name}</p>
+          <p style={{margin:0,fontSize:12,color:"#8E8E93"}}>{r.category} · 每月 NT${fmtMoney(r.amount)}</p>
+        </div>
+        <div style={{textAlign:"right"}}>
+          <span style={{color:"#FF9500",fontWeight:"600"}}>{paid}/{total} 期</span>
+          <p style={{margin:0,fontSize:10,color:"#C7C7CC"}}>剩 NT${fmtMoney(remainAmt)}</p>
+        </div>
+        <button style={S.delBtn} onClick={()=>onDelete(r.id)}>✕</button>
+      </div>
+      <div>
+        <div style={{height:5,background:"#E5E5EA",borderRadius:3,overflow:"hidden"}}>
+          <div style={{height:"100%",width:`${pct}%`,background:pct>=100?"#34C759":"#007AFF",borderRadius:3,transition:"width 0.4s"}}/>
+        </div>
+        <p style={{margin:"3px 0 0",fontSize:11,color:"#8E8E93",textAlign:"right"}}>{pct}% 已付</p>
+      </div>
     </div>
   );
 }
@@ -1187,13 +1345,13 @@ function InvestSection({invest,setInvest,investPrices,fetchInvestPrices,rates,sh
   );
 }
 
-function Assets({assets,updateAsset,delAsset,setModal,rates,refreshRates,recurring,binance,fetchBinance,invest,setInvest,investPrices,fetchInvestPrices,showToast}){
+function Assets({assets,updateAsset,delAsset,setModal,rates,refreshRates,recurring,binance,fetchBinance,invest,setInvest,investPrices,fetchInvestPrices,showToast,networth,setNetworth}){
   const [editId,setEditId]=useState(null);
   const [editVal,setEditVal]=useState("");
+  const [showNW,setShowNW]=useState(false);
 
   // 換算所有資產為台幣加總
   const totalTWD = assets.reduce((s,a)=>s+toTWD(Number(a.amount),a.ccy),0);
-  // 信用卡/貸款等固定扣款的「負債」概略：這裡僅顯示資產；淨資產 = 資產 - 未來負債不計入，保持單純
 
   // 依類型分組
   const byType={};
@@ -1204,6 +1362,19 @@ function Assets({assets,updateAsset,delAsset,setModal,rates,refreshRates,recurri
   const startEdit=(a)=>{ setEditId(a.id); setEditVal(String(a.amount)); };
   const saveEdit=(a)=>{ updateAsset(a.id,{amount:Number(editVal)||0}); setEditId(null); };
 
+  // 淨資產快照
+  const snapNetworth=()=>{
+    const snap={date:today(),value:totalTWD,id:uid()};
+    setNetworth(prev=>{
+      const filtered=prev.filter(n=>n.date!==snap.date); // 同日只保留最新
+      return [...filtered,snap].sort((a,b)=>a.date.localeCompare(b.date)).slice(-90); // 最多 90 筆
+    });
+    showToast("淨資產快照已記錄 ✓");
+  };
+
+  const nwLast = networth && networth.length>0 ? networth[networth.length-1] : null;
+  const nwChange = networth && networth.length>=2 ? totalTWD - networth[networth.length-2].value : null;
+
   return (
     <div style={S.tab}>
       <div style={S.pageTitle}>資產總覽</div>
@@ -1212,8 +1383,40 @@ function Assets({assets,updateAsset,delAsset,setModal,rates,refreshRates,recurri
       <div className="anim-card" style={{...S.balanceCard,background:"linear-gradient(135deg,#5856D6 0%,#007AFF 100%)"}}>
         <p style={S.balanceLabel}>總資產（換算台幣）</p>
         <p style={{...S.balanceAmt,color:"#fff"}}>NT$ {fmtMoney(totalTWD)}</p>
-        <p style={{margin:0,fontSize:11,color:"rgba(255,255,255,0.75)"}}>共 {assets.length} 項資產 · 匯率更新：{rateInfo}</p>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+          <p style={{margin:0,fontSize:11,color:"rgba(255,255,255,0.75)"}}>共 {assets.length} 項資產 · 匯率：{rateInfo}</p>
+          {nwChange!==null && <span style={{fontSize:11,color:nwChange>=0?"#A0F0BC":"#FFB3AD"}}>{nwChange>=0?"↑":"↓"} NT${fmtMoney(Math.abs(nwChange))}</span>}
+        </div>
+        <div style={{display:"flex",gap:8,marginTop:10}}>
+          <button onClick={snapNetworth} style={{flex:1,padding:"7px",background:"rgba(255,255,255,0.2)",border:"none",borderRadius:12,color:"#fff",fontSize:12,fontWeight:"600",cursor:"pointer"}}>📸 記錄快照</button>
+          {networth?.length>0 && <button onClick={()=>setShowNW(v=>!v)} style={{flex:1,padding:"7px",background:"rgba(255,255,255,0.2)",border:"none",borderRadius:12,color:"#fff",fontSize:12,fontWeight:"600",cursor:"pointer"}}>📈 {showNW?"隱藏":"歷史"}</button>}
+        </div>
       </div>
+
+      {/* 淨資產歷史 */}
+      {showNW && networth?.length>0 && (
+        <div style={{...S.card,marginBottom:12}}>
+          <p style={{...S.cardTitle,marginBottom:10}}>淨資產趨勢（最近 {Math.min(networth.length,30)} 筆）</p>
+          {(()=>{
+            const pts=networth.slice(-30);
+            const maxV=Math.max(...pts.map(p=>p.value),1);
+            const minV=Math.min(...pts.map(p=>p.value),0);
+            const range=maxV-minV||1;
+            return (
+              <div style={{position:"relative",height:80,display:"flex",alignItems:"flex-end",gap:2}}>
+                {pts.map((p,i)=>{
+                  const h=Math.max(4,((p.value-minV)/range)*72);
+                  return <div key={p.id||i} title={`${p.date}: NT$${fmtMoney(p.value)}`} style={{flex:1,height:h,background:"#5856D6",borderRadius:3,opacity:0.7+0.3*(i/pts.length)}}/>;
+                })}
+              </div>
+            );
+          })()}
+          <div style={{display:"flex",justifyContent:"space-between",fontSize:10,color:"#8E8E93",marginTop:4}}>
+            <span>{networth.slice(-30)[0]?.date}</span>
+            <span>{nwLast?.date}</span>
+          </div>
+        </div>
+      )}
 
       {/* Binance */}
       <BinanceCard binance={binance} fetchBinance={fetchBinance}/>
@@ -1318,8 +1521,86 @@ function AssetModal({onAdd,onClose}){
 }
 
 // ══════════════ STATS ═════════════════════════════════════════════
-function Stats({txns,recurring,month,setMonth,year,setYear}){
-  const [view,setView]=useState("month"); // month | year
+function Stats({txns,recurring,month,setMonth,year,setYear,budgets,setBudgets,aiAnalysis,aiResult,aiLoading}){
+  const [view,setView]=useState("month"); // month | year | budget
+  const [editBudget,setEditBudget]=useState(false);
+  const [budgetForm,setBudgetForm]=useState({});
+
+  if(view==="budget"){
+    const mTx=txns.filter(t=>t.date.startsWith(month)&&t.type==="expense");
+    const catMap={}; mTx.forEach(t=>catMap[t.category]=(catMap[t.category]||0)+Number(t.amount));
+    const allCats=[...new Set([...Object.keys(budgets),...Object.keys(catMap)])].sort();
+    const openEdit=()=>{ setBudgetForm({...budgets}); setEditBudget(true); };
+    const saveBudget=()=>{ setBudgets({...budgetForm}); setEditBudget(false); };
+    return (
+      <div style={S.tab}>
+        <ViewToggle view={view} setView={setView}/>
+        <MonthNav current={month} onChange={setMonth} mode="month"/>
+        <div style={S.card}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+            <span style={{fontSize:15,fontWeight:"600"}}>💰 預算 vs 實際</span>
+            <button style={S.smallBtn} onClick={openEdit}>設定預算</button>
+          </div>
+          {allCats.length===0 && <p style={{color:"#8E8E93",fontSize:13,textAlign:"center"}}>點「設定預算」為每個分類設上限</p>}
+          {allCats.map(cat=>{
+            const spent=catMap[cat]||0;
+            const budget=budgets[cat]||0;
+            const pct=budget>0?Math.min(100,spent/budget*100):0;
+            const over=budget>0&&spent>budget;
+            return (
+              <div key={cat} style={{marginBottom:14}}>
+                <div style={{display:"flex",justifyContent:"space-between",fontSize:13,marginBottom:4}}>
+                  <span style={{fontWeight:"500"}}>{cat}</span>
+                  <span style={{color:over?"#FF3B30":"#3C3C43"}}>
+                    NT${fmtMoney(spent)}{budget>0&&` / ${fmtMoney(budget)}`}
+                    {over&&" ⚠️"}
+                  </span>
+                </div>
+                {budget>0&&(
+                  <div style={{height:6,background:"#E5E5EA",borderRadius:3,overflow:"hidden"}}>
+                    <div style={{height:"100%",width:`${pct}%`,background:over?"#FF3B30":pct>80?"#FF9500":"#34C759",borderRadius:3,transition:"width 0.4s"}}/>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+        {/* AI 分析 */}
+        <div style={S.card}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+            <span style={{fontSize:15,fontWeight:"600"}}>🤖 AI 支出分析</span>
+            <button style={S.smallBtn} onClick={aiAnalysis} disabled={aiLoading}>{aiLoading?"分析中…":"立即分析"}</button>
+          </div>
+          {aiResult ? (
+            <p style={{fontSize:13,color:"#3C3C43",lineHeight:1.7,margin:0,whiteSpace:"pre-wrap"}}>{aiResult}</p>
+          ) : (
+            <p style={{fontSize:12,color:"#8E8E93",margin:0}}>分析近 3 個月消費習慣，找出可優化的支出模式</p>
+          )}
+        </div>
+        <div style={{height:100}}/>
+        {editBudget&&(
+          <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.4)",display:"flex",alignItems:"flex-end",zIndex:300}} onClick={()=>setEditBudget(false)}>
+            <div style={{background:"#F2F2F7",borderRadius:"28px 28px 0 0",width:"100%",maxWidth:430,margin:"0 auto",padding:"16px 16px calc(16px + env(safe-area-inset-bottom))",maxHeight:"70vh",overflowY:"auto"}} onClick={e=>e.stopPropagation()}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
+                <span style={{fontSize:16,fontWeight:"600"}}>設定每月預算</span>
+                <button onClick={()=>setEditBudget(false)} style={{background:"none",border:"none",fontSize:22,color:"#8E8E93",cursor:"pointer"}}>×</button>
+              </div>
+              {DEFAULT_CATS.expense.map(cat=>(
+                <div key={cat} style={{display:"flex",alignItems:"center",gap:10,marginBottom:10}}>
+                  <span style={{flex:1,fontSize:14}}>{cat}</span>
+                  <input type="number" placeholder="不設限"
+                    style={{...S.inputField,width:110,marginBottom:0,textAlign:"right"}}
+                    value={budgetForm[cat]||""}
+                    onChange={e=>setBudgetForm(f=>({...f,[cat]:Number(e.target.value)||0}))}/>
+                </div>
+              ))}
+              <button style={S.primaryBtn} onClick={saveBudget}>儲存預算</button>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
 
   if(view==="month"){
     const mTx=txns.filter(t=>t.date.startsWith(month));
@@ -1375,6 +1656,24 @@ function Stats({txns,recurring,month,setMonth,year,setYear}){
         </div>
       </div>
       <BarChart title={`${year} 年每月收支`} data={months12} max={max12} compact/>
+      {/* 年度消費熱圖 */}
+      <div style={S.card}>
+        <p style={S.cardTitle}>消費熱圖</p>
+        <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:6,marginTop:10}}>
+          {months12.map(m=>{
+            const ratio=max12>0?m.exp/max12:0;
+            const intensity=Math.round(ratio*100);
+            const bg=`rgba(255,59,48,${0.1+ratio*0.85})`;
+            return (
+              <div key={m.mk} style={{background:bg,borderRadius:10,padding:"8px 4px",textAlign:"center"}}>
+                <div style={{fontSize:11,color:intensity>50?"#fff":"#3C3C43",fontWeight:"600"}}>{m.label}月</div>
+                <div style={{fontSize:10,color:intensity>50?"rgba(255,255,255,0.85)":"#8E8E93",marginTop:2}}>{m.exp>0?`${fmtMoney(m.exp)}`:"—"}</div>
+              </div>
+            );
+          })}
+        </div>
+        <p style={{fontSize:11,color:"#8E8E93",margin:"8px 0 0"}}>顏色越深代表支出越高</p>
+      </div>
       <CatBreakdown title="年度支出分類" catList={catList} total={catList.reduce((s,[,v])=>s+v,0)}/>
       <div style={{height:100}}/>
     </div>
@@ -1383,7 +1682,7 @@ function Stats({txns,recurring,month,setMonth,year,setYear}){
 function ViewToggle({view,setView}){
   return (
     <div style={S.viewToggle}>
-      {[["month","月報表"],["year","年報表"]].map(([v,l])=>(
+      {[["month","月報表"],["year","年報表"],["budget","預算"]].map(([v,l])=>(
         <button key={v} style={{...S.viewBtn,...(view===v?S.viewBtnActive:{})}} onClick={()=>setView(v)}>{l}</button>
       ))}
     </div>
@@ -1912,8 +2211,8 @@ function Modal({title,onClose,children}){
 
 // ══════════════ STYLES ════════════════════════════════════════════
 const S={
-  shell:{fontFamily:"-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif",background:"#F2F2F7",minHeight:"100vh",maxWidth:430,margin:"0 auto",position:"relative",overflowX:"hidden"},
-  statusBar:{height:8,background:"#F2F2F7"},
+  shell:{fontFamily:"-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif",background:"var(--bg,#F2F2F7)",minHeight:"100vh",maxWidth:430,margin:"0 auto",position:"relative",overflowX:"hidden"},
+  statusBar:{height:8,background:"var(--bg,#F2F2F7)"},
   content:{paddingBottom:"calc(80px + env(safe-area-inset-bottom))"},
   loadWrap:{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",height:"100vh"},
   spinner:{width:32,height:32,border:"3px solid #E5E5EA",borderTop:"3px solid #007AFF",borderRadius:"50%",animation:"spin 0.8s linear infinite"},
@@ -1933,27 +2232,27 @@ const S={
   pendDismiss:{padding:"9px 14px",background:"#F2F2F7",color:"#8E8E93",border:"none",borderRadius:14,fontSize:13,fontWeight:"600",cursor:"pointer"},
   goalBanner:{display:"flex",alignItems:"center",background:"#fff",borderRadius:20,padding:"12px 14px",marginBottom:12,fontSize:14},
   recTotal:{background:"#FFF8EE",borderRadius:22,padding:16,marginBottom:12},
-  recRow:{display:"flex",alignItems:"center",gap:10,background:"#fff",borderRadius:24,padding:"12px 14px",marginBottom:6},
-  assetRow:{display:"flex",alignItems:"center",gap:6,background:"#fff",borderRadius:18,padding:"10px 12px",marginBottom:5},
+  recRow:{display:"flex",alignItems:"center",gap:10,background:"var(--card,#fff)",borderRadius:24,padding:"12px 14px",marginBottom:6},
+  assetRow:{display:"flex",alignItems:"center",gap:6,background:"var(--card,#fff)",borderRadius:18,padding:"10px 12px",marginBottom:5},
   miniLabel:{margin:0,fontSize:12,color:"#8E8E93"},
   bigNum:{margin:"2px 0 0",fontSize:22,fontWeight:"700"},
   quickRow:{display:"flex",gap:8,marginBottom:16},
-  quickBtn:{flex:1,display:"flex",flexDirection:"column",alignItems:"center",background:"#fff",border:"none",borderRadius:28,padding:"12px 8px",cursor:"pointer",gap:4},
+  quickBtn:{flex:1,display:"flex",flexDirection:"column",alignItems:"center",background:"var(--card,#fff)",border:"none",borderRadius:28,padding:"12px 8px",cursor:"pointer",gap:4},
   quickLabel:{fontSize:10,color:"#3C3C43",fontWeight:"500"},
   sectionHeader:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8,marginTop:8},
-  txRow:{display:"flex",alignItems:"center",gap:10,background:"#fff",borderRadius:24,padding:"12px 14px",marginBottom:6},
+  txRow:{display:"flex",alignItems:"center",gap:10,background:"var(--card,#fff)",borderRadius:24,padding:"12px 14px",marginBottom:6},
   txIcon:{width:40,height:40,borderRadius:14,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0},
   monthNav:{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"12px 0",marginBottom:8},
   navArrow:{background:"none",border:"none",fontSize:22,color:"#007AFF",cursor:"pointer",padding:"0 8px"},
-  card:{background:"#fff",borderRadius:28,padding:16,marginBottom:12},
+  card:{background:"var(--card,#fff)",borderRadius:28,padding:16,marginBottom:12},
   cardTitle:{margin:0,fontSize:14,fontWeight:"600",color:"#3C3C43"},
   empty:{textAlign:"center",padding:"40px 0"},
-  tabBar:{position:"fixed",bottom:0,left:"50%",transform:"translateX(-50%)",width:"100%",maxWidth:430,background:"rgba(255,255,255,0.92)",backdropFilter:"blur(20px)",borderTop:"1px solid #E5E5EA",display:"flex",paddingBottom:"env(safe-area-inset-bottom)",zIndex:100},
+  tabBar:{position:"fixed",bottom:0,left:"50%",transform:"translateX(-50%)",width:"100%",maxWidth:430,background:"var(--tabbar-bg,rgba(255,255,255,0.92))",backdropFilter:"blur(20px)",borderTop:"1px solid var(--sep,#E5E5EA)",display:"flex",paddingBottom:"env(safe-area-inset-bottom)",zIndex:100},
   tabBtn:{flex:1,display:"flex",flexDirection:"column",alignItems:"center",padding:"7px 0 12px",background:"none",border:"none",cursor:"pointer"},
   tabActive:{color:"#007AFF"},
   fab:{position:"fixed",bottom:"calc(80px + env(safe-area-inset-bottom))",right:20,width:56,height:56,borderRadius:28,background:"#007AFF",color:"#fff",border:"none",fontSize:28,fontWeight:"300",cursor:"pointer",boxShadow:"0 4px 16px rgba(0,122,255,0.4)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:99},
   overlay:{position:"fixed",inset:0,background:"rgba(0,0,0,0.4)",display:"flex",alignItems:"flex-end",zIndex:200},
-  sheet:{background:"#F2F2F7",borderRadius:"44px 44px 0 0",width:"100%",maxWidth:430,margin:"0 auto",padding:"0 16px",paddingBottom:34},
+  sheet:{background:"var(--bg,#F2F2F7)",borderRadius:"44px 44px 0 0",width:"100%",maxWidth:430,margin:"0 auto",padding:"0 16px",paddingBottom:34},
   handle:{width:36,height:4,background:"#C7C7CC",borderRadius:2,margin:"8px auto 0"},
   modalHeader:{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"12px 0",borderBottom:"1px solid #E5E5EA",marginBottom:16},
   closeBtn:{background:"none",border:"none",fontSize:16,color:"#8E8E93",cursor:"pointer",padding:"4px 8px"},
@@ -1982,8 +2281,8 @@ const S={
   hintBox:{background:"#FFF8EE",border:"1px solid #FFE8B0",borderRadius:14,padding:"8px 12px",fontSize:12,color:"#8E5500",marginTop:8},
   progBg:{height:8,background:"#F2F2F7",borderRadius:4,overflow:"hidden",marginTop:4},
   progFill:{height:"100%",background:"#34C759",borderRadius:4,transition:"width 0.3s"},
-  goalSummary:{background:"#fff",borderRadius:22,padding:16,marginBottom:12},
-  goalCard:{background:"#fff",borderRadius:22,padding:16,marginBottom:10},
+  goalSummary:{background:"var(--card,#fff)",borderRadius:22,padding:16,marginBottom:12},
+  goalCard:{background:"var(--card,#fff)",borderRadius:22,padding:16,marginBottom:10},
   depositBtn:{width:"100%",padding:10,background:"#EFF6FF",color:"#007AFF",border:"none",borderRadius:14,fontSize:13,fontWeight:"600",cursor:"pointer",marginTop:10},
   goalActionBtn:{padding:"10px 12px",background:"#34C759",color:"#fff",border:"none",borderRadius:14,fontSize:13,fontWeight:"600",cursor:"pointer",whiteSpace:"nowrap"},
   viewToggle:{display:"flex",gap:6,background:"#E5E5EA",borderRadius:14,padding:3,marginTop:12},
