@@ -1016,7 +1016,7 @@ function Recurring({recurring,delRec,setModal}){
         </div>
         <div style={{display:"flex",gap:6,marginTop:12}}>
           {[["all","全部"],["sub","訂閱"],["install","分期"]].map(([v,l])=>(
-            <button key={v} onClick={()=>setView(v)} style={{flex:1,padding:"6px 0",borderRadius:14,border:"none",fontSize:12,fontWeight:"600",cursor:"pointer",background:view===v?"#007AFF":"#E5E5EA",color:view===v?"#fff":"#3C3C43"}}>{l}</button>
+            <button key={v} onClick={()=>setView(v)} style={{flex:1,padding:"6px 0",borderRadius:14,border:"none",fontSize:12,fontWeight:"600",cursor:"pointer",background:view===v?"#007AFF":"var(--bg3,#E5E5EA)",color:view===v?"#fff":"var(--text2,#3C3C43)"}}>{l}</button>
           ))}
         </div>
       </div>
@@ -1060,7 +1060,7 @@ function InstallRow({r,onDelete}){
         <span style={S.catIcon}>{ICONS[r.category]||"💳"}</span>
         <div style={{flex:1}}>
           <p style={{margin:0,fontWeight:"600",fontSize:15}}>{r.name}</p>
-          <p style={{margin:0,fontSize:12,color:"#8E8E93"}}>{r.category} · 每月 NT${fmtMoney(r.amount)}</p>
+          <p style={{margin:0,fontSize:12,color:"var(--sub,#8E8E93)"}}>{r.category} · 每月 NT${fmtMoney(r.amount)}</p>
         </div>
         <div style={{textAlign:"right"}}>
           <span style={{color:"#FF9500",fontWeight:"600"}}>{paid}/{total} 期</span>
@@ -1084,7 +1084,7 @@ function RecRow({r,onDelete}){
       <span style={S.catIcon}>{ICONS[r.category]||"🔁"}</span>
       <div style={{flex:1}}>
         <p style={{margin:0,fontWeight:"600",fontSize:15}}>{r.name}</p>
-        <p style={{margin:0,fontSize:12,color:"#8E8E93"}}>
+        <p style={{margin:0,fontSize:12,color:"var(--sub,#8E8E93)"}}>
           {r.category} · {FREQ_LABEL[r.freq]||"每月"}
           {isYearly && r.month ? ` ${r.month}月` : ""} {r.day} 日
           {(isYearly||r.freq==="quarterly") && <span style={{color:"#FF9500"}}> · 月均 NT$ {fmtMoney(monthlyEquiv(r))}</span>}
@@ -1122,7 +1122,7 @@ function Goals({goals,delGoal,updateGoal,setModal}){
               <span style={{fontSize:24}}>{ICONS[g.category]||"🎯"}</span>
               <div style={{flex:1}}>
                 <p style={{margin:0,fontWeight:"600",fontSize:16}}>{g.name} {done&&"✅"}</p>
-                <p style={{margin:0,fontSize:12,color:"#8E8E93"}}>{g.category}{g.deadline?` · 目標 ${g.deadline}`:""}</p>
+                <p style={{margin:0,fontSize:12,color:"var(--sub,#8E8E93)"}}>{g.category}{g.deadline?` · 目標 ${g.deadline}`:""}</p>
               </div>
               <button style={S.delBtn} onClick={()=>delGoal(g.id)}>✕</button>
             </div>
@@ -1260,10 +1260,10 @@ function InvestSection({invest,setInvest,investPrices,fetchInvestPrices,rates,sh
       </div>
 
       {totalVal!=null && (
-        <div style={{background:"#F2F2F7",borderRadius:16,padding:"10px 14px",marginBottom:10}}>
+        <div style={{background:"var(--bg3,#F2F2F7)",borderRadius:16,padding:"10px 14px",marginBottom:10}}>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline"}}>
-            <span style={{fontSize:12,color:"#8E8E93"}}>投資組合總值</span>
-            <span style={{fontSize:18,fontWeight:"700"}}>NT$ {fmtMoney(totalVal)}</span>
+            <span style={{fontSize:12,color:"var(--sub,#8E8E93)"}}>投資組合總值</span>
+            <span style={{fontSize:18,fontWeight:"700",color:"var(--text,#000)"}}>NT$ {fmtMoney(totalVal)}</span>
           </div>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",marginTop:4}}>
             <span style={{fontSize:12,color:"#8E8E93"}}>總損益</span>
@@ -1825,7 +1825,7 @@ function doPost(e){
       <div style={S.pageTitle}>同步與工具</div>
 
       {/* Security */}
-      <div style={{...S.card,background:"#F0FFF4",border:"1px solid #C6F6D5"}}>
+      <div style={{...S.card,background:"var(--card,#F0FFF4)",border:"1px solid var(--sep,#C6F6D5)"}}>
         <p style={{fontSize:15,fontWeight:"600",margin:"0 0 4px"}}>🔐 安全性</p>
         <p style={{fontSize:12,color:"#2F855A",margin:"0 0 12px",lineHeight:1.6}}>
           • 資料以 {PIN_LEN} 位密碼 + AES-256 加密儲存<br/>
@@ -1833,7 +1833,7 @@ function doPost(e){
           • 離開超過 5 分鐘自動上鎖<br/>
           • 雲端同步採端到端加密，雲端只存亂碼
         </p>
-        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"8px 0",borderTop:"1px solid #C6F6D5"}}>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"8px 0",borderTop:"1px solid var(--sep,#C6F6D5)"}}>
           <span style={{fontSize:14,fontWeight:"500"}}>👤 生物辨識解鎖</span>
           <button style={{...S.smallBtn,background:bioOn?"#34C759":"#E5E5EA",color:bioOn?"#fff":"#3C3C43"}} onClick={toggleBio}>{bioOn?"已啟用":"啟用"}</button>
         </div>
@@ -1893,7 +1893,7 @@ function doPost(e){
       </div>
 
       {/* Supabase backend — 已接上 */}
-      <div style={{...S.card,background:"#F0FFF4",border:"1px solid #C6F6D5"}}>
+      <div style={{...S.card,background:"var(--card,#F0FFF4)",border:"1px solid var(--sep,#C6F6D5)"}}>
         <p style={{fontSize:15,fontWeight:"600",margin:"0 0 4px"}}>🗄 Supabase 雲端帳號</p>
         {!sbUser ? (
           <>
@@ -2202,7 +2202,7 @@ function TxRow({tx,onDelete,showDate}){
       <div style={{flex:1}}>
         <div style={{display:"flex",justifyContent:"space-between"}}>
           <span style={{fontSize:14,fontWeight:"500"}}>{tx.category}</span>
-          <span style={{fontSize:14,fontWeight:"600",color:tx.type==="income"?"#34C759":"#1C1C1E"}}>{tx.type==="income"?"+":"-"}{amtLabel}</span>
+          <span style={{fontSize:14,fontWeight:"600",color:tx.type==="income"?"#34C759":"var(--text,#1C1C1E)"}}>{tx.type==="income"?"+":"-"}{amtLabel}</span>
         </div>
         <div style={{display:"flex",justifyContent:"space-between",marginTop:2}}>
           <span style={{fontSize:12,color:"#8E8E93"}}>{tx.note||TYPE_LABEL[tx.type]}{foreign?` · ≈NT$${fmtMoney(toTWD(tx.amount,tx.ccy))}`:""}</span>
@@ -2251,8 +2251,8 @@ const S={
   balanceLabel:{margin:0,fontSize:13,color:"rgba(255,255,255,0.8)"},
   balanceAmt:{margin:"4px 0 14px",fontSize:34,fontWeight:"700"},
   balanceRow:{display:"flex",justifyContent:"space-between"},
-  recBanner:{display:"flex",alignItems:"center",background:"#FFF8EE",border:"1px solid #FFE8B0",borderRadius:20,padding:"12px 14px",marginBottom:12,cursor:"pointer",fontSize:14},
-  pendingWrap:{background:"#FFF1F0",border:"1px solid #FFD0CC",borderRadius:22,padding:12,marginBottom:12},
+  recBanner:{display:"flex",alignItems:"center",background:"var(--card,#FFF8EE)",border:"1px solid var(--sep,#FFE8B0)",borderRadius:20,padding:"12px 14px",marginBottom:12,cursor:"pointer",fontSize:14},
+  pendingWrap:{background:"var(--card,#FFF1F0)",border:"1px solid var(--sep,#FFD0CC)",borderRadius:22,padding:12,marginBottom:12},
   pendingHeader:{display:"flex",alignItems:"center",gap:8,marginBottom:8},
   pendingCount:{background:"#FF3B30",color:"#fff",fontSize:12,fontWeight:"700",minWidth:20,height:20,borderRadius:10,display:"inline-flex",alignItems:"center",justifyContent:"center",padding:"0 6px"},
   pendingRow:{background:"var(--card,#fff)",borderRadius:18,padding:"12px 14px",marginBottom:8},
@@ -2321,7 +2321,7 @@ const S={
   goalSummaryRow:{},
   toolBtn:{padding:"10px 14px",background:"var(--bg3,#F2F2F7)",color:"#007AFF",border:"none",borderRadius:14,fontSize:13,fontWeight:"600",cursor:"pointer"},
   stepNum:{width:22,height:22,borderRadius:11,background:"#007AFF",color:"#fff",fontSize:12,fontWeight:"700",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,marginTop:1},
-  codeBlock:{display:"block",background:"#F2F2F7",borderRadius:12,padding:10,fontSize:11,color:"#3C3C43",wordBreak:"break-all",lineHeight:1.6,whiteSpace:"pre-wrap"},
+  codeBlock:{display:"block",background:"var(--bg3,#F2F2F7)",borderRadius:12,padding:10,fontSize:11,color:"var(--text2,#3C3C43)",wordBreak:"break-all",lineHeight:1.6,whiteSpace:"pre-wrap"},
   copyBtn:{padding:"4px 12px",background:"#007AFF",color:"#fff",border:"none",borderRadius:10,fontSize:12,cursor:"pointer",fontWeight:"500"},
   toast:{position:"fixed",top:60,left:"50%",transform:"translateX(-50%)",padding:"10px 24px",borderRadius:24,color:"#fff",fontWeight:"600",fontSize:14,zIndex:300,boxShadow:"0 4px 16px rgba(0,0,0,0.2)",whiteSpace:"nowrap"},
   lockWrap:{position:"fixed",top:0,left:0,right:0,bottom:0,background:"linear-gradient(160deg,#007AFF 0%,#5856D6 100%)",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:24,paddingTop:"calc(env(safe-area-inset-top) + 24px)",boxSizing:"border-box",zIndex:999},
