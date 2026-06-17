@@ -334,6 +334,7 @@ async function bioUnlock(){
   }catch{ return false; }
 }
 function bioDisable(){ localStorage.removeItem(LOCK.bio); localStorage.removeItem(LOCK.biowrap); }
+async function bioVerify(){ const ok=await bioUnlock(); if(!ok) throw new Error("生物辨識失敗"); }
 
 // ── End-to-end encryption for cloud payload ──
 // Derive a separate key from the sync token so the cloud only ever sees ciphertext.
@@ -2117,6 +2118,12 @@ const S = {
   codeBlock:  { display:"block", background:"var(--bg3,#F2F2F7)", borderRadius:12, padding:12, fontSize:11, color:"var(--text2,#3C3C43)", whiteSpace:"pre-wrap", wordBreak:"break-all", marginTop:4, fontFamily:"monospace" },
   balanceAmt: { margin:0, fontSize:34, fontWeight:"700", color:"#fff", letterSpacing:-1 },
   balanceSubtxt:{ margin:"2px 0 0", fontSize:13, color:"rgba(255,255,255,0.8)" },
+  balanceCard: { background:"linear-gradient(135deg,#007AFF 0%,#5856D6 100%)", borderRadius:22, padding:20, marginBottom:12, boxShadow:"0 4px 20px rgba(0,122,255,0.3)" },
+  balanceLabel:{ margin:"0 0 4px", fontSize:13, color:"rgba(255,255,255,0.8)", fontWeight:"500" },
+  balanceRow:  { display:"flex", justifyContent:"space-around", marginTop:16, paddingTop:14, borderTop:"1px solid rgba(255,255,255,0.2)" },
+  pendingHeader:{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 },
+  pendingCount:{ background:"#FF3B30", color:"#fff", borderRadius:10, padding:"1px 7px", fontSize:12, fontWeight:"700" },
+  quickRow:    { display:"flex", gap:8, marginBottom:16 },
 };
 
 // ══════════════════════════════════════════════════════════════════
@@ -2455,6 +2462,76 @@ function CSVModal({onImport,onClose}){
 // ══════════════════════════════════════════════════════════════════
 // LOCK SCREEN
 // ══════════════════════════════════════════════════════════════════
+// ── MonthNav ──────────────────────────────────────────────────────
+function MonthNav({current,onChange,mode}){
+  const prev=()=>{
+    if(mode==="year"){ onChange(String(Number(current)-1)); return; }
+    const [y,m]=current.split("-");
+    const d=new Date(Number(y),Number(m)-2,1);
+    onChange(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`);
+  };
+  const next=()=>{
+    if(mode==="year"){ onChange(String(Number(current)+1)); return; }
+    const [y,m]=current.split("-");
+    const d=new Date(Number(y),Number(m),1);
+    onChange(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`);
+  };
+  const label=mode==="year"?`${current} 年`:`${current.slice(0,4)} 年 ${Number(current.slice(5,7))} 月`;
+  return (
+    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:12}}>
+      <button onClick={prev} style={{background:"none",border:"none",fontSize:22,cursor:"pointer",color:"var(--text2,#3C3C43)",padding:"4px 12px",borderRadius:10}}>‹</button>
+      <span style={{fontSize:15,fontWeight:"700",color:"var(--text,#000)"}}>{label}</span>
+      <button onClick={next} style={{background:"none",border:"none",fontSize:22,cursor:"pointer",color:"var(--text2,#3C3C43)",padding:"4px 12px",borderRadius:10}}>›</button>
+    </div>
+  );
+}
+// ── Chip ──────────────────────────────────────────────────────────
+function Chip({label,val}){
+  return (
+    <div style={{textAlign:"center"}}>
+      <p style={{margin:0,fontSize:11,color:"rgba(255,255,255,0.75)"}}>{label}</p>
+      <p style={{margin:"2px 0 0",fontSize:15,fontWeight:"700",color:"#fff"}}>NT$ {fmtMoney(val)}</p>
+    </div>
+  );
+}
+// ── TxRow ─────────────────────────────────────────────────────────
+function TxRow({tx,onDelete,showDate}){
+  const isExp=tx.type==="expense";
+  const isSav=tx.type==="saving";
+  const color=isExp?"#FF3B30":isSav?"#5856D6":"#34C759";
+  const sign=(isExp||isSav)?"-":"+";
+  return (
+    <div style={S.txRow}>
+      <span style={S.catIcon}>{ICONS[tx.category]||"📦"}</span>
+      <div style={{flex:1,minWidth:0}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+          <span style={{fontSize:14,fontWeight:"600",color:"var(--text,#000)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{tx.category}</span>
+          <span style={{fontSize:15,fontWeight:"700",color,flexShrink:0,marginLeft:8}}>{sign}NT${fmtMoney(tx.amount)}</span>
+        </div>
+        <div style={{display:"flex",justifyContent:"space-between",marginTop:2}}>
+          <span style={{fontSize:12,color:"var(--sub,#8E8E93)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{tx.note||TYPE_LABEL[tx.type]}</span>
+          {showDate&&<span style={{fontSize:11,color:"var(--sub,#8E8E93)",flexShrink:0,marginLeft:4}}>{tx.date}</span>}
+        </div>
+      </div>
+      <button style={S.delBtn} onClick={()=>onDelete(tx.id)}>✕</button>
+    </div>
+  );
+}
+// ── Modal ─────────────────────────────────────────────────────────
+function Modal({title,onClose,children}){
+  return (
+    <div style={{position:"fixed",inset:0,zIndex:300,background:"rgba(0,0,0,0.4)",display:"flex",alignItems:"flex-end"}} onClick={onClose}>
+      <div style={{background:"var(--bg,#F2F2F7)",borderRadius:"28px 28px 0 0",width:"100%",maxWidth:430,margin:"0 auto",padding:"16px 16px calc(16px + env(safe-area-inset-bottom))",maxHeight:"85vh",overflowY:"auto"}} onClick={e=>e.stopPropagation()}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
+          <span style={{fontSize:16,fontWeight:"700",color:"var(--text,#000)"}}>{title}</span>
+          <button onClick={onClose} style={{background:"none",border:"none",fontSize:22,color:"#8E8E93",cursor:"pointer"}}>×</button>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
+// ──────────────────────────────────────────────────────────────────
 function LockScreen({onUnlock,onBio,lockout}){
   const [pin,setPin]=useState("");
   const [err,setErr]=useState(0);
