@@ -1914,7 +1914,7 @@ function doPost(e){
           <>
             <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10}}>
               <span style={{fontSize:13,color:"#2F855A"}}>已登入：<b>{sbUser}</b></span>
-              <button style={{...S.smallBtn,background:"#fff"}} onClick={sbLogout}>登出</button>
+              <button style={S.smallBtn} onClick={sbLogout}>登出</button>
             </div>
             {!sync.token && <div style={{...S.hintBox,marginBottom:10}}>⚠️ 請先在上方「雲端同步」卡片設定一組「同步密鑰」，它同時是 Supabase 的加密金鑰。手機電腦要用同一組。</div>}
             <div style={{display:"flex",gap:8}}>
@@ -2005,9 +2005,9 @@ function doPost(e){
             <p style={{fontSize:16,fontWeight:"700",margin:"0 0 6px",color:"var(--text,#000)"}}>👤 啟用生物辨識</p>
             <p style={{fontSize:13,color:"var(--sub,#8E8E93)",margin:"0 0 16px"}}>請輸入 {PIN_LEN} 位數 App 密碼確認</p>
             <input
-              type="password" inputMode="numeric" maxLength={PIN_LEN} autoFocus
+              type="password" inputMode="numeric" pattern="[0-9]*" maxLength={PIN_LEN} autoFocus
               style={{...S.inputField,textAlign:"center",fontSize:22,letterSpacing:8,marginBottom:16}}
-              value={bioPin} onChange={e=>setBioPin(e.target.value)}
+              value={bioPin} onChange={e=>setBioPin(e.target.value.replace(/\D/g,"").slice(0,PIN_LEN))}
               onKeyDown={e=>e.key==="Enter"&&bioPin.length===PIN_LEN&&confirmBioPin()}
             />
             <div style={{display:"flex",gap:8}}>
@@ -2124,6 +2124,10 @@ const S = {
   pendingHeader:{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 },
   pendingCount:{ background:"#FF3B30", color:"#fff", borderRadius:10, padding:"1px 7px", fontSize:12, fontWeight:"700" },
   quickRow:    { display:"flex", gap:8, marginBottom:16 },
+  filterRow:   { display:"flex", gap:6, marginBottom:12 },
+  filterActive:{ background:"#007AFF", color:"#fff", borderColor:"#007AFF" },
+  goalActionBtn:{ flex:1, padding:"8px 0", borderRadius:12, border:"none", background:"#34C759", color:"#fff", fontWeight:"600", fontSize:14, cursor:"pointer" },
+  depositBtn:  { display:"block", width:"100%", padding:"10px 0", borderRadius:14, border:"1.5px solid #34C759", background:"transparent", color:"#34C759", fontSize:14, fontWeight:"600", cursor:"pointer", marginTop:8, textAlign:"center" },
 };
 
 // ══════════════════════════════════════════════════════════════════
@@ -2543,6 +2547,14 @@ function LockScreen({onUnlock,onBio,lockout}){
     return ()=>clearInterval(t);
   },[]);
 
+  // 有 Face ID 時自動觸發
+  useEffect(()=>{
+    if(onBio){
+      const t=setTimeout(()=>onBio(),300);
+      return ()=>clearTimeout(t);
+    }
+  },[]);
+
   const tryPin=async()=>{
     if(busy||pin.length!==PIN_LEN)return;
     setBusy(true);
@@ -2552,14 +2564,25 @@ function LockScreen({onUnlock,onBio,lockout}){
     else { setErr(failCount()); setPin(""); setRemaining(lockoutRemaining()); }
   };
 
+  // 只允許數字輸入
+  const onPinChange=(e)=>{
+    const v=e.target.value.replace(/\D/g,"");
+    setPin(v.slice(0,PIN_LEN));
+  };
+
   return (
     <div style={{minHeight:"100vh",background:"var(--bg,#F2F2F7)",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:32}}>
       <p style={{fontSize:40,margin:"0 0 8px"}}>🔐</p>
-      <p style={{fontSize:22,fontWeight:"700",margin:"0 0 4px",color:"var(--text,#000)"}}>輸入密碼</p>
-      <p style={{fontSize:13,color:"var(--sub,#8E8E93)",margin:"0 0 28px"}}>請輸入 {PIN_LEN} 位數密碼</p>
+      <p style={{fontSize:22,fontWeight:"700",margin:"0 0 4px",color:"var(--text,#000)"}}>
+        {onBio?"生物辨識解鎖":"輸入密碼"}
+      </p>
+      <p style={{fontSize:13,color:"var(--sub,#8E8E93)",margin:"0 0 28px"}}>
+        {onBio?"或輸入 6 位數密碼":"請輸入 6 位數密碼"}
+      </p>
       <input
-        type="password" inputMode="numeric" maxLength={PIN_LEN} autoFocus
-        value={pin} onChange={e=>setPin(e.target.value)}
+        type="password" inputMode="numeric" pattern="[0-9]*" maxLength={PIN_LEN}
+        autoFocus={!onBio}
+        value={pin} onChange={onPinChange}
         onKeyDown={e=>e.key==="Enter"&&pin.length===PIN_LEN&&tryPin()}
         style={{fontSize:28,letterSpacing:12,textAlign:"center",width:180,padding:"12px 16px",border:"2px solid var(--sep,#E5E5EA)",borderRadius:16,background:"var(--card,#fff)",color:"var(--text,#000)",outline:"none",marginBottom:16}}
       />
