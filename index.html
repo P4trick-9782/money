@@ -508,6 +508,7 @@ function App({ onLock }){
   const [budgets,setBudgets] = useState({});  // 分類預算 { 餐飲:5000, ... }
   const [networth,setNetworth] = useState([]); // 淨資產快照 [{ date, value }]
   const [modal,setModal]     = useState(null);
+  const [editingRec,setEditingRec] = useState(null);
   const [toast,setToast]     = useState(null);
   const [loaded,setLoaded]   = useState(false);
   const [month,setMonth]     = useState(today().slice(0,7));
@@ -576,6 +577,7 @@ function App({ onLock }){
   const addTx=(tx)=>{ setTxns(p=>[{...tx,id:uid(),createdAt:new Date().toISOString()},...p]); showToast("記帳成功 ✓"); };
   const delTx=(id)=>{ setTxns(p=>p.filter(t=>t.id!==id)); showToast("已刪除","warn"); };
   const addRec=(r)=>{ setRec(p=>[{...r,id:uid()},...p]); showToast("固定扣款已新增 ✓"); };
+  const updateRec=(r)=>{ setRec(p=>p.map(x=>x.id===r.id?r:x)); showToast("已更新 ✓"); };
   const delRec=(id)=>setRec(p=>p.filter(r=>r.id!==id));
   const addGoal=(g)=>{ setGoals(p=>[{...g,id:uid(),saved:Number(g.saved)||0},...p]); showToast("目標已建立 🎯"); };
   const delGoal=(id)=>setGoals(p=>p.filter(g=>g.id!==id));
@@ -791,7 +793,7 @@ function App({ onLock }){
         <div key={tab} className={animClass}>
         {tab==="home"     && <Home {...{mTx,mInc,mExp,mSav,recMonthly,balance,month,setMonth,delTx,setModal,recurring,goals,pending,confirmPending,dismissPending,updatePending,showToast,budgets,txns}}/>}
         {tab==="txns"     && <Txns {...{txns,delTx,month,setMonth}}/>}
-        {tab==="recurring"&& <Recurring {...{recurring,delRec,setModal}}/>}
+        {tab==="recurring"&& <Recurring {...{recurring,delRec,setModal,onEdit:(r)=>{setEditingRec(r);setModal("recurring");}}}/>}
         {tab==="goals"    && <Goals {...{goals,delGoal,updateGoal,setModal}}/>}
         {tab==="assets"   && <Assets {...{assets,updateAsset,delAsset,setModal,rates,refreshRates,recurring,binance,fetchBinance,invest,setInvest,investPrices,fetchInvestPrices,showToast,networth,setNetworth}}/>}
         {tab==="stats"    && <Stats {...{txns,recurring,month,setMonth,year,setYear,budgets,setBudgets,aiAnalysis,aiResult,aiLoading}}/>}
@@ -805,7 +807,7 @@ function App({ onLock }){
       {modal==="voice"    && <VoiceModal onAdd={addTx} onClose={()=>setModal(null)} showToast={showToast}/>}
       {modal==="receipt"  && <ReceiptModal onAdd={addTx} onClose={()=>setModal(null)} showToast={showToast}/>}
       {modal==="csv"      && <CSVModal onImport={(t)=>{setTxns(p=>[...t,...p]);showToast(`已匯入 ${t.length} 筆`);}} onClose={()=>setModal(null)}/>}
-      {modal==="recurring"&& <RecurringModal onAdd={addRec} onClose={()=>setModal(null)}/>}
+      {modal==="recurring"&& <RecurringModal onAdd={addRec} onEdit={updateRec} initial={editingRec} onClose={()=>{setModal(null);setEditingRec(null);}}/>}
       {modal==="goal"     && <GoalModal onAdd={addGoal} onClose={()=>setModal(null)}/>}
       {modal==="asset"    && <AssetModal onAdd={addAsset} onClose={()=>setModal(null)}/>}
 
@@ -990,7 +992,7 @@ function Txns({txns,delTx,month,setMonth}){
 
 // ══════════════ RECURRING ═════════════════════════════════════════
 const SUB_CATS=["串流影音","音樂","雲端儲存","軟體","健身","新聞","遊戲","其他訂閱"];
-function Recurring({recurring,delRec,setModal}){
+function Recurring({recurring,delRec,setModal,onEdit}){
   const [view,setView]=useState("all"); // all | sub | install
   const totalMonthEquiv=recurring.reduce((s,r)=>s+monthlyEquiv(r),0);
   const totalYear=recurring.reduce((s,r)=>{
@@ -1023,24 +1025,24 @@ function Recurring({recurring,delRec,setModal}){
       {recurring.length===0 && <Empty icon="🔁" msg="尚未設定固定扣款"/>}
       {view==="sub" && (
         <>
-          {subs.length===0 ? <Empty icon="📱" msg="尚未設定訂閱服務"/> : subs.map(r=><RecRow key={r.id} r={r} onDelete={delRec}/>)}
+          {subs.length===0 ? <Empty icon="📱" msg="尚未設定訂閱服務"/> : subs.map(r=><RecRow key={r.id} r={r} onDelete={delRec} onEdit={onEdit}/>)}
         </>
       )}
       {view==="install" && (
         <>
-          {installs.length===0 ? <Empty icon="💳" msg="尚未設定分期付款"/> : installs.map(r=><InstallRow key={r.id} r={r} onDelete={delRec}/>)}
+          {installs.length===0 ? <Empty icon="💳" msg="尚未設定分期付款"/> : installs.map(r=><InstallRow key={r.id} r={r} onDelete={delRec} onEdit={onEdit}/>)}
         </>
       )}
       {view==="all" && (
         <>
           {subs.length>0 && <Section title={`📱 訂閱服務（${subs.length}）`}/>}
-          {subs.map(r=><RecRow key={r.id} r={r} onDelete={delRec}/>)}
+          {subs.map(r=><RecRow key={r.id} r={r} onDelete={delRec} onEdit={onEdit}/>)}
           {installs.length>0 && <Section title={`💳 分期付款（${installs.length}）`}/>}
-          {installs.map(r=><InstallRow key={r.id} r={r} onDelete={delRec}/>)}
+          {installs.map(r=><InstallRow key={r.id} r={r} onDelete={delRec} onEdit={onEdit}/>)}
           {monthly.length>0 && <Section title="每月扣款"/>}
-          {monthly.map(r=><RecRow key={r.id} r={r} onDelete={delRec}/>)}
+          {monthly.map(r=><RecRow key={r.id} r={r} onDelete={delRec} onEdit={onEdit}/>)}
           {periodic.length>0 && <Section title="年度 / 季度扣款"/>}
-          {periodic.map(r=><RecRow key={r.id} r={r} onDelete={delRec}/>)}
+          {periodic.map(r=><RecRow key={r.id} r={r} onDelete={delRec} onEdit={onEdit}/>)}
         </>
       )}
       <button style={S.addRecBtn} onClick={()=>setModal("recurring")}>＋ 新增固定扣款</button>
@@ -1048,7 +1050,7 @@ function Recurring({recurring,delRec,setModal}){
     </div>
   );
 }
-function InstallRow({r,onDelete}){
+function InstallRow({r,onDelete,onEdit}){
   const paid=r.paidMonths||0;
   const total=r.totalMonths||12;
   const pct=Math.min(100,Math.round(paid/total*100));
@@ -1066,6 +1068,7 @@ function InstallRow({r,onDelete}){
           <span style={{color:"#FF9500",fontWeight:"600"}}>{paid}/{total} 期</span>
           <p style={{margin:0,fontSize:10,color:"#C7C7CC"}}>剩 NT${fmtMoney(remainAmt)}</p>
         </div>
+        {onEdit && <button style={{...S.delBtn,background:"#007AFF20",color:"#007AFF"}} onClick={()=>onEdit(r)}>✎</button>}
         <button style={S.delBtn} onClick={()=>onDelete(r.id)}>✕</button>
       </div>
       <div>
@@ -1077,7 +1080,7 @@ function InstallRow({r,onDelete}){
     </div>
   );
 }
-function RecRow({r,onDelete}){
+function RecRow({r,onDelete,onEdit}){
   const isYearly=r.freq==="yearly";
   return (
     <div style={S.recRow}>
@@ -1094,6 +1097,7 @@ function RecRow({r,onDelete}){
         <span style={{color:"#FF9500",fontWeight:"600"}}>NT$ {fmtMoney(r.amount)}</span>
         <p style={{margin:0,fontSize:10,color:"#C7C7CC"}}>{FREQ_LABEL[r.freq]||"每月"}</p>
       </div>
+      {onEdit && <button style={{...S.delBtn,background:"#007AFF20",color:"#007AFF"}} onClick={()=>onEdit(r)}>✎</button>}
       <button style={S.delBtn} onClick={()=>onDelete(r.id)}>✕</button>
     </div>
   );
@@ -1996,19 +2000,12 @@ function doPost(e){
       {/* 生物辨識啟用 PIN 輸入彈窗（iOS PWA 不支援 prompt()） */}
       {bioModal && (
         <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.55)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:500}} onClick={()=>setBioModal(false)}>
-          <div style={{background:"var(--bg,#F2F2F7)",borderRadius:24,padding:24,width:280,textAlign:"center"}} onClick={e=>e.stopPropagation()}>
-            <p style={{fontSize:16,fontWeight:"700",margin:"0 0 6px",color:"var(--text,#000)"}}>👤 啟用生物辨識</p>
-            <p style={{fontSize:13,color:"var(--sub,#8E8E93)",margin:"0 0 16px"}}>請輸入 {PIN_LEN} 位數 App 密碼確認</p>
-            <input
-              type="password" inputMode="numeric" maxLength={PIN_LEN} autoFocus
-              style={{...S.inputField,textAlign:"center",fontSize:22,letterSpacing:8,marginBottom:16}}
-              value={bioPin} onChange={e=>setBioPin(e.target.value.replace(/\D/g,"").slice(0,PIN_LEN))}
-              onKeyDown={e=>{ if(e.key==="Enter" && bioPin.length===PIN_LEN) confirmBioPin(); }}
-              placeholder="••••••"
+          <div style              value={bioPin} onChange={e=>setBioPin(e.target.value)}
+              onKeyDown={e=>e.key==="Enter"&&bioPin.length===PIN_LEN&&confirmBioPin()}
             />
             <div style={{display:"flex",gap:8}}>
-              <button style={{...S.smallBtn,flex:1}} onClick={()=>setBioModal(false)}>取消</button>
-              <button style={{...S.primaryBtn,flex:1,marginTop:0}} disabled={bioPin.length!==PIN_LEN} onClick={confirmBioPin}>確認並啟用</button>
+              <button style={{flex:1,padding:"10px 0",borderRadius:14,border:"none",background:"var(--bg3,#E5E5EA)",color:"var(--text2,#3C3C43)",fontWeight:"600",fontSize:15,cursor:"pointer"}} onClick={()=>setBioModal(false)}>取消</button>
+              <button style={{flex:1,padding:"10px 0",borderRadius:14,border:"none",background:"#007AFF",color:"#fff",fontWeight:"600",fontSize:15,cursor:"pointer",opacity:bioPin.length===PIN_LEN?1:0.4}} onClick={confirmBioPin} disabled={bioPin.length!==PIN_LEN}>確認</button>
             </div>
           </div>
         </div>
@@ -2017,99 +2014,300 @@ function doPost(e){
   );
 }
 
-// ══════════════ MODALS ════════════════════════════════════════════
-function AddModal({onAdd,onClose,onVoice,onReceipt,onCSV,rates}){
-  const [type,setType]=useState("expense");
-  const [category,setCategory]=useState("");
-  const [amount,setAmount]=useState("");
-  const [ccy,setCcy]=useState(BASE_CCY);
-  const [note,setNote]=useState("");
-  const [date,setDate]=useState(today());
-  const cats=DEFAULT_CATS[type]||[];
-  useEffect(()=>{ setCategory(cats[0]||""); },[type]);
-  const submit=()=>{ if(!amount||isNaN(Number(amount)))return; onAdd({type,category,amount:Number(amount),ccy,note,date}); onClose(); };
-  const twdPreview = ccy!==BASE_CCY && amount ? toTWD(Number(amount),ccy) : null;
+// ══════════════════════════════════════════════════════════════════
+// STYLES
+// ══════════════════════════════════════════════════════════════════
+const S = {
+  // layout
+  loadWrap:  { minHeight:"100vh", display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", background:"var(--bg,#F2F2F7)" },
+  spinner:   { width:32, height:32, border:"3px solid var(--sep,#E5E5EA)", borderTopColor:"#007AFF", borderRadius:"50%", animation:"spin 0.8s linear infinite" },
+  shell:     { minHeight:"100vh", display:"flex", flexDirection:"column", background:"var(--bg,#F2F2F7)", position:"relative", maxWidth:430, margin:"0 auto", overflow:"hidden" },
+  statusBar: { height:0, background:"var(--bg,#F2F2F7)" },
+  content:   { flex:1, overflowY:"auto", overflowX:"hidden", paddingBottom:84, WebkitOverflowScrolling:"touch" },
+  tab:       { padding:"16px 16px 0", minHeight:"80vh" },
+  pageTitle: { fontSize:28, fontWeight:"700", margin:"0 0 16px", color:"var(--text,#000)" },
+
+  // tab bar
+  tabBar:    { position:"fixed", bottom:0, left:"50%", transform:"translateX(-50%)", width:"100%", maxWidth:430, background:"var(--tabbar-bg,rgba(255,255,255,0.92))", backdropFilter:"blur(20px)", WebkitBackdropFilter:"blur(20px)", borderTop:"1px solid var(--sep,#E5E5EA)", display:"flex", zIndex:100, paddingBottom:"env(safe-area-inset-bottom)" },
+  tabBtn:    { flex:1, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", padding:"8px 2px 6px", border:"none", background:"transparent", cursor:"pointer", gap:2 },
+  tabIcon:   { fontSize:22 },
+  tabLabel:  { fontSize:9, fontWeight:"500", color:"var(--sub,#8E8E93)" },
+
+  // fab
+  fab:       { position:"fixed", bottom:90, right:"calc(50% - 200px)", width:52, height:52, borderRadius:"50%", background:"#007AFF", color:"#fff", fontSize:28, lineHeight:"52px", textAlign:"center", border:"none", cursor:"pointer", zIndex:200, boxShadow:"0 4px 20px rgba(0,122,255,0.4)" },
+
+  // toast
+  toast:     { position:"fixed", top:"5%", left:"50%", transform:"translateX(-50%)", padding:"10px 20px", borderRadius:20, color:"#fff", fontWeight:"600", fontSize:14, zIndex:999, whiteSpace:"nowrap", pointerEvents:"none" },
+
+  // cards
+  card:      { background:"var(--card,#fff)", borderRadius:22, padding:16, marginBottom:12, boxShadow:"0 2px 8px rgba(0,0,0,0.06)" },
+  cardTitle: { fontSize:15, fontWeight:"700", margin:"0 0 8px", color:"var(--text2,#3C3C43)" },
+  miniLabel: { margin:0, fontSize:12, color:"var(--sub,#8E8E93)", marginBottom:2 },
+  bigNum:    { margin:0, fontSize:26, fontWeight:"700" },
+  section:   { fontSize:13, fontWeight:"600", color:"var(--sub,#8E8E93)", margin:"16px 0 6px", padding:"0 4px" },
+
+  // rows
+  recRow:    { background:"var(--card,#fff)", borderRadius:18, padding:"12px 14px", marginBottom:8, display:"flex", alignItems:"center", gap:10, boxShadow:"0 1px 4px rgba(0,0,0,0.05)" },
+  txRow:     { background:"var(--card,#fff)", borderRadius:18, padding:"12px 14px", marginBottom:6, display:"flex", alignItems:"center", gap:10, boxShadow:"0 1px 4px rgba(0,0,0,0.05)" },
+  assetRow:  { background:"var(--card,#fff)", borderRadius:18, padding:"12px 14px", marginBottom:8, display:"flex", alignItems:"center", gap:10 },
+  goalCard:  { background:"var(--card,#fff)", borderRadius:20, padding:14, marginBottom:10, boxShadow:"0 2px 8px rgba(0,0,0,0.06)" },
+
+  // category icon
+  catIcon:   { fontSize:24, width:36, textAlign:"center", flexShrink:0 },
+
+  // buttons
+  primaryBtn:{ display:"block", width:"100%", padding:"14px 0", borderRadius:16, border:"none", background:"#007AFF", color:"#fff", fontSize:16, fontWeight:"600", cursor:"pointer", textAlign:"center", marginTop:12 },
+  smallBtn:  { background:"var(--bg3,#F2F2F7)", border:"none", borderRadius:12, padding:"8px 14px", fontSize:13, fontWeight:"600", cursor:"pointer", color:"var(--text2,#3C3C43)" },
+  altBtn:    { background:"var(--bg3,#F2F2F7)", border:"none", borderRadius:12, padding:"8px 14px", fontSize:13, fontWeight:"500", cursor:"pointer", color:"var(--text2,#3C3C43)", flex:1 },
+  chipBtn:   { background:"var(--card,#fff)", border:"1px solid var(--sep,#E5E5EA)", borderRadius:20, padding:"6px 14px", fontSize:13, fontWeight:"500", cursor:"pointer", color:"var(--text2,#3C3C43)" },
+  delBtn:    { background:"#FF3B3015", border:"none", borderRadius:10, width:28, height:28, display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", color:"#FF3B30", fontSize:13, fontWeight:"700", flexShrink:0 },
+  toolBtn:   { background:"var(--bg3,#F2F2F7)", border:"none", borderRadius:12, padding:"6px 12px", fontSize:13, fontWeight:"600", cursor:"pointer", color:"var(--text2,#3C3C43)" },
+  addRecBtn: { background:"var(--card,#fff)", border:"1.5px dashed #007AFF", borderRadius:18, padding:14, width:"100%", fontSize:15, fontWeight:"600", color:"#007AFF", cursor:"pointer", marginTop:8, display:"block", textAlign:"center" },
+
+  // pending
+  pendingWrap: { background:"var(--card,#FFF1F0)", border:"1px solid var(--sep,#FFD0CC)", borderRadius:18, padding:14, marginBottom:12 },
+  pendingRow:  { background:"var(--card,#fff)", borderRadius:16, padding:12, marginBottom:8, boxShadow:"0 1px 4px rgba(0,0,0,0.06)" },
+  pendConfirm: { flex:2, padding:"8px 0", borderRadius:12, border:"none", background:"#34C759", color:"#fff", fontWeight:"600", fontSize:13, cursor:"pointer" },
+  pendEdit:    { flex:1, padding:"8px 0", borderRadius:12, border:"none", background:"var(--bg3,#E5E5EA)", color:"var(--text2,#3C3C43)", fontWeight:"600", fontSize:13, cursor:"pointer" },
+  pendDismiss: { flex:1, padding:"8px 0", borderRadius:12, border:"none", background:"var(--bg3,#E5E5EA)", color:"var(--sub,#8E8E93)", fontWeight:"600", fontSize:13, cursor:"pointer" },
+
+  // recurring banners
+  recBanner: { background:"var(--card,#FFF8EE)", border:"1px solid var(--sep,#FFE8B0)", borderRadius:18, padding:"12px 14px", marginBottom:12, cursor:"pointer" },
+  recTotal:  { background:"var(--card,#FFF8EE)", borderRadius:20, padding:16, marginBottom:12 },
+
+  // goal
+  goalSummary: { background:"var(--card,#fff)", borderRadius:22, padding:16, marginBottom:12, boxShadow:"0 2px 8px rgba(0,0,0,0.06)" },
+  goalBanner:  { background:"var(--card,#fff)", borderRadius:20, padding:14, marginBottom:8 },
+
+  // progress
+  progBg:    { height:6, background:"var(--bg3,#E5E5EA)", borderRadius:3, overflow:"hidden", marginTop:4 },
+  progFill:  { height:"100%", borderRadius:3, transition:"width 0.6s ease" },
+
+  // modal
+  sheet:      { position:"fixed", inset:0, zIndex:300, display:"flex", flexDirection:"column", background:"var(--bg,#F2F2F7)", animation:"sheetUp 0.35s cubic-bezier(0.32,0.72,0,1) both", overflowY:"auto" },
+  modalHeader:{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"14px 16px", borderBottom:"1px solid var(--sep,#E5E5EA)", background:"var(--bg,#F2F2F7)", position:"sticky", top:0, zIndex:1 },
+
+  // form
+  label:      { display:"block", fontSize:12, fontWeight:"600", color:"var(--sub,#8E8E93)", marginBottom:4, marginTop:12 },
+  inputField: { width:"100%", padding:"12px 14px", borderRadius:14, border:"1.5px solid var(--sep,#E5E5EA)", background:"var(--card,#fff)", color:"var(--text,#000)", fontSize:16, outline:"none", boxSizing:"border-box", marginBottom:6 },
+  amtRow:     { background:"var(--card,#fff)", border:"1.5px solid var(--sep,#E5E5EA)", borderRadius:16, display:"flex", alignItems:"center", overflow:"hidden", marginBottom:10 },
+  amtCur:     { padding:"14px 12px", color:"var(--sub,#8E8E93)", fontSize:15, fontWeight:"600", borderRight:"1px solid var(--sep,#E5E5EA)", background:"transparent", border:"none", outline:"none" },
+  amtInput:   { flex:1, padding:"14px 12px", fontSize:28, fontWeight:"700", border:"none", background:"transparent", color:"var(--text,#000)", outline:"none", width:"100%" },
+  catBtn:     { background:"var(--card,#fff)", border:"1.5px solid var(--sep,#E5E5EA)", borderRadius:20, padding:"6px 12px", fontSize:13, fontWeight:"500", cursor:"pointer", color:"var(--text2,#3C3C43)", whiteSpace:"nowrap" },
+  catGrid:    { display:"flex", flexWrap:"wrap", gap:6, marginBottom:8 },
+  typeBtn:    { flex:1, padding:"10px 0", borderRadius:14, border:"none", fontWeight:"600", fontSize:14, cursor:"pointer", background:"var(--card,#fff)", color:"var(--text2,#3C3C43)" },
+
+  // misc
+  filterBtn:  { background:"var(--card,#fff)", border:"1.5px solid var(--sep,#E5E5EA)", borderRadius:20, padding:"6px 14px", fontSize:13, fontWeight:"500", cursor:"pointer", color:"var(--text2,#3C3C43)" },
+  quickBtn:   { background:"var(--card,#fff)", borderRadius:18, padding:"14px 12px", display:"flex", flexDirection:"column", alignItems:"center", gap:6, border:"none", cursor:"pointer", boxShadow:"0 1px 4px rgba(0,0,0,0.05)" },
+  quickLabel: { fontSize:12, color:"var(--text2,#3C3C43)", fontWeight:"500" },
+  viewToggle: { display:"flex", background:"var(--bg3,#E5E5EA)", borderRadius:14, padding:3, marginBottom:14 },
+  viewBtn:    { flex:1, padding:"7px 0", borderRadius:11, border:"none", fontSize:13, fontWeight:"600", cursor:"pointer", background:"transparent", color:"var(--sub,#8E8E93)" },
+  viewBtnActive:{ background:"var(--card,#fff)", color:"var(--text,#1C1C1E)", boxShadow:"0 1px 4px rgba(0,0,0,0.1)" },
+  transcriptBox:{ background:"var(--bg3,#F2F2F7)", borderRadius:14, padding:"10px 14px", fontSize:14, color:"var(--text2,#3C3C43)", lineHeight:1.6, textAlign:"left" },
+  hintBox:    { background:"#FFF8EE", border:"1px solid #FFE8B0", borderRadius:12, padding:"10px 12px", fontSize:12, color:"#856404", lineHeight:1.6 },
+  stepNum:    { background:"#007AFF", color:"#fff", borderRadius:"50%", width:20, height:20, display:"flex", alignItems:"center", justifyContent:"center", fontSize:11, fontWeight:"700", flexShrink:0 },
+  copyBtn:    { background:"var(--bg3,#E5E5EA)", border:"none", borderRadius:10, padding:"4px 10px", fontSize:11, fontWeight:"600", cursor:"pointer", color:"var(--text2,#3C3C43)" },
+  codeBlock:  { display:"block", background:"var(--bg3,#F2F2F7)", borderRadius:12, padding:12, fontSize:11, color:"var(--text2,#3C3C43)", whiteSpace:"pre-wrap", wordBreak:"break-all", marginTop:4, fontFamily:"monospace" },
+  balanceAmt: { margin:0, fontSize:34, fontWeight:"700", color:"#fff", letterSpacing:-1 },
+  balanceSubtxt:{ margin:"2px 0 0", fontSize:13, color:"rgba(255,255,255,0.8)" },
+};
+
+// ══════════════════════════════════════════════════════════════════
+// HELPER COMPONENTS
+// ══════════════════════════════════════════════════════════════════
+function Empty({icon,msg}){
   return (
-    <Modal title="新增記帳" onClose={onClose}>
-      <div style={S.typeRow}>
-        {Object.entries(TYPE_LABEL).filter(([k])=>k!=="recurring").map(([v,l])=>(
-          <button key={v} style={{...S.typeBtn,...(type===v?{background:TYPE_COLOR[v].bg,color:"#fff",borderColor:TYPE_COLOR[v].bg}:{})}} onClick={()=>setType(v)}>{l}</button>
-        ))}
-      </div>
-      <label style={S.label}>分類</label>
-      <div style={S.catGrid}>{cats.map(c=>(<button key={c} style={{...S.catBtn,...(category===c?{background:TYPE_COLOR[type].bg,color:"#fff",borderColor:TYPE_COLOR[type].bg}:{})}} onClick={()=>setCategory(c)}>{ICONS[c]||"📦"} {c}</button>))}</div>
-      <label style={S.label}>幣別</label>
-      <div style={S.catGrid}>{CURRENCIES.map(c=>(<button key={c.code} style={{...S.catBtn,...(ccy===c.code?{background:"#007AFF",color:"#fff",borderColor:"#007AFF"}:{})}} onClick={()=>setCcy(c.code)}>{c.sym} {c.code}</button>))}</div>
-      <label style={S.label}>金額</label>
-      <div style={S.amtRow}><span style={S.amtCur}>{CCY_SYM[ccy]||"NT$"}</span><input style={S.amtInput} type="number" placeholder="0" value={amount} onChange={e=>setAmount(e.target.value)} inputMode="numeric"/></div>
-      {twdPreview!=null && <div style={S.hintBox}>≈ 換算台幣 NT$ {fmtMoney(twdPreview)}（依目前匯率）</div>}
-      <label style={S.label}>日期</label>
-      <input style={S.inputField} type="date" value={date} onChange={e=>setDate(e.target.value)}/>
-      <label style={S.label}>備註（可選）</label>
-      <input style={S.inputField} placeholder="輸入備註…" value={note} onChange={e=>setNote(e.target.value)}/>
-      <button style={S.primaryBtn} onClick={submit}>儲存</button>
-      <div style={S.altRow}><span style={{fontSize:12,color:"#8E8E93"}}>其他方式：</span>
-        {[["🎙","語音",onVoice],["📷","掃描",onReceipt],["📂","CSV",onCSV]].map(([i,l,f])=>(<button key={l} style={S.altBtn} onClick={f}>{i} {l}</button>))}
-      </div>
-    </Modal>
+    <div style={{textAlign:"center",padding:"36px 0",color:"var(--sub,#8E8E93)"}}>
+      <p style={{fontSize:40,margin:"0 0 8px"}}>{icon}</p>
+      <p style={{fontSize:14,margin:0}}>{msg}</p>
+    </div>
+  );
+}
+function Section({title}){
+  return <p style={S.section}>{title}</p>;
+}
+function TabBar({tab,setTab}){
+  const tabs=[
+    {key:"home",  icon:"🏠",label:"首頁"},
+    {key:"txns",  icon:"📋",label:"明細"},
+    {key:"recurring",icon:"🔄",label:"固定"},
+    {key:"goals", icon:"🎯",label:"目標"},
+    {key:"assets",icon:"💎",label:"資產"},
+    {key:"stats", icon:"📊",label:"統計"},
+    {key:"more",  icon:"☁️",label:"同步"},
+  ];
+  return (
+    <div style={S.tabBar}>
+      {tabs.map(t=>(
+        <button key={t.key} style={S.tabBtn} onClick={()=>setTab(t.key)}>
+          <span style={{...S.tabIcon,filter:tab===t.key?"none":"grayscale(1)",opacity:tab===t.key?1:0.5}}>{t.icon}</span>
+          <span style={{...S.tabLabel,color:tab===t.key?"#007AFF":"var(--sub,#8E8E93)",fontWeight:tab===t.key?"700":"500"}}>{t.label}</span>
+        </button>
+      ))}
+    </div>
   );
 }
 
-function RecurringModal({onAdd,onClose}){
-  const [name,setName]=useState("");
-  const [category,setCat]=useState(DEFAULT_CATS.recurring[0]);
+// ══════════════════════════════════════════════════════════════════
+// MODAL COMPONENTS
+// ══════════════════════════════════════════════════════════════════
+function AddModal({onAdd,onClose,onVoice,onReceipt,onCSV,rates}){
+  const [type,setType]=useState("expense");
   const [amount,setAmount]=useState("");
-  const [freq,setFreq]=useState("monthly");
-  const [day,setDay]=useState("1");
-  const [month,setMonth]=useState("1");
-  const submit=()=>{ if(!name||!amount)return; onAdd({name,category,amount:Number(amount),freq,day:Number(day),month:freq==="yearly"?Number(month):null}); onClose(); };
+  const [cat,setCat]=useState("");
+  const [note,setNote]=useState("");
+  const [date,setDate]=useState(today());
+  const [ccy,setCcy]=useState("TWD");
+  const cats=DEFAULT_CATS[type]||[];
+  const col=TYPE_COLOR[type]?.bg||"#007AFF";
+  const submit=()=>{
+    if(!amount||isNaN(Number(amount))||Number(amount)<=0) return;
+    const c=cat||(cats[0]||"其他");
+    onAdd({type,amount:Number(amount),category:c,note,date,ccy});
+    onClose();
+  };
   return (
-    <Modal title="新增固定扣款" onClose={onClose}>
-      <label style={S.label}>名稱</label>
-      <input style={S.inputField} placeholder="如：車貸、汽車保險" value={name} onChange={e=>setName(e.target.value)}/>
-      <label style={S.label}>頻率</label>
-      <div style={S.typeRow}>
-        {[["monthly","每月"],["quarterly","每季"],["yearly","每年"]].map(([v,l])=>(
-          <button key={v} style={{...S.typeBtn,...(freq===v?{background:"#FF9500",color:"#fff",borderColor:"#FF9500"}:{})}} onClick={()=>setFreq(v)}>{l}</button>
-        ))}
+    <div style={{...S.sheet,overflowY:"auto"}}>
+      <div style={S.modalHeader}>
+        <button style={S.toolBtn} onClick={onClose}>取消</button>
+        <span style={{fontWeight:"700",fontSize:16}}>新增記錄</span>
+        <button style={{...S.toolBtn,background:col,color:"#fff"}} onClick={submit}>完成</button>
       </div>
-      <label style={S.label}>分類</label>
-      <div style={S.catGrid}>{DEFAULT_CATS.recurring.map(c=>(<button key={c} style={{...S.catBtn,...(category===c?{background:"#FF9500",color:"#fff",borderColor:"#FF9500"}:{})}} onClick={()=>setCat(c)}>{ICONS[c]||"🔁"} {c}</button>))}</div>
-      <label style={S.label}>{freq==="yearly"?"每年扣款金額":freq==="quarterly"?"每季扣款金額":"每月扣款金額"}</label>
-      <div style={S.amtRow}><span style={S.amtCur}>NT$</span><input style={S.amtInput} type="number" placeholder="0" value={amount} onChange={e=>setAmount(e.target.value)} inputMode="numeric"/></div>
-      {freq==="yearly" && (<>
-        <label style={S.label}>扣款月份</label>
-        <select style={S.inputField} value={month} onChange={e=>setMonth(e.target.value)}>{Array.from({length:12},(_,i)=>i+1).map(m=>(<option key={m} value={m}>{m} 月</option>))}</select>
-      </>)}
-      <label style={S.label}>扣款日</label>
-      <input style={S.inputField} type="number" min="1" max="31" value={day} onChange={e=>setDay(e.target.value)} placeholder="1~31"/>
-      {freq==="yearly" && amount && <div style={S.hintBox}>💡 年繳 NT$ {fmtMoney(amount)}，月均攤約 NT$ {fmtMoney(Number(amount)/12)}</div>}
-      <button style={S.primaryBtn} onClick={submit}>儲存</button>
-    </Modal>
+      <div style={{padding:"12px 16px 0"}}>
+        <div style={{display:"flex",gap:6,marginBottom:12}}>
+          {[["expense","支出"],["income","收入"],["saving","儲蓄"]].map(([t,l])=>(
+            <button key={t} onClick={()=>{setType(t);setCat("");}} style={{flex:1,padding:"9px 0",borderRadius:14,border:"none",fontWeight:"600",fontSize:14,cursor:"pointer",background:type===t?TYPE_COLOR[t].bg:"var(--bg3,#E5E5EA)",color:type===t?"#fff":"var(--text2,#3C3C43)"}}>{l}</button>
+          ))}
+        </div>
+        <div style={S.amtRow}>
+          <select value={ccy} onChange={e=>setCcy(e.target.value)} style={{padding:"14px 10px",background:"transparent",border:"none",outline:"none",color:"var(--sub,#8E8E93)",fontSize:13,fontWeight:"600",borderRight:"1px solid var(--sep,#E5E5EA)"}}>
+            {["TWD","USD","JPY","EUR","KRW","CNY","HKD","GBP"].map(c=><option key={c}>{c}</option>)}
+          </select>
+          <input type="number" inputMode="decimal" placeholder="0" value={amount} onChange={e=>setAmount(e.target.value)} style={{...S.amtInput}} autoFocus/>
+        </div>
+        <label style={S.label}>分類</label>
+        <div style={{...S.catGrid,marginBottom:12}}>
+          {cats.map(c=>(
+            <button key={c} onClick={()=>setCat(c)} style={{...S.catBtn,...(cat===c?{background:col,color:"#fff",borderColor:col}:{})}}>{ICONS[c]||"📦"} {c}</button>
+          ))}
+        </div>
+        <label style={S.label}>備註</label>
+        <input style={S.inputField} placeholder="備註（可省略）" value={note} onChange={e=>setNote(e.target.value)}/>
+        <label style={S.label}>日期</label>
+        <input type="date" style={S.inputField} value={date} onChange={e=>setDate(e.target.value)}/>
+        <div style={{display:"flex",gap:8,marginTop:4,marginBottom:16}}>
+          <button style={S.altBtn} onClick={onVoice}>🎤 語音</button>
+          <button style={S.altBtn} onClick={onReceipt}>📷 掃描</button>
+          <button style={S.altBtn} onClick={onCSV}>📊 CSV</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function RecurringModal({onAdd,onEdit,onClose,initial}){
+  const isEdit=!!initial;
+  const [subType,setSubType]=useState(initial?.subType||"other");
+  const [name,setName]=useState(initial?.name||"");
+  const [amount,setAmount]=useState(initial?.amount||"");
+  const [cat,setCat]=useState(initial?.category||"訂閱服務");
+  const [freq,setFreq]=useState(initial?.freq||"monthly");
+  const [day,setDay]=useState(initial?.day||1);
+  const [month,setMonth]=useState(initial?.month||1);
+  const [totalMonths,setTotalMonths]=useState(initial?.totalMonths||12);
+  const [paidMonths,setPaidMonths]=useState(initial?.paidMonths||0);
+  const cats=DEFAULT_CATS.recurring||[];
+  const submit=()=>{
+    if(!name||!amount)return;
+    const r={
+      name,amount:Number(amount),category:cat,freq,
+      subType:subType==="subscription"?"subscription":subType==="installment"?"installment":"other",
+      day:Number(day),month:Number(month),
+      ...(subType==="installment"?{totalMonths:Number(totalMonths),paidMonths:Number(paidMonths)}:{})
+    };
+    if(isEdit){ onEdit({...initial,...r}); }
+    else { onAdd(r); }
+    onClose();
+  };
+  return (
+    <div style={{...S.sheet,overflowY:"auto"}}>
+      <div style={S.modalHeader}>
+        <button style={S.toolBtn} onClick={onClose}>取消</button>
+        <span style={{fontWeight:"700",fontSize:16}}>{isEdit?"編輯":"新增"}固定扣款</span>
+        <button style={{...S.toolBtn,background:"#FF9500",color:"#fff"}} onClick={submit}>完成</button>
+      </div>
+      <div style={{padding:"12px 16px"}}>
+        <label style={S.label}>類型</label>
+        <div style={{display:"flex",gap:6,marginBottom:4}}>
+          {[["subscription","📱 訂閱"],["installment","💳 分期"],["other","🔁 其他"]].map(([v,l])=>(
+            <button key={v} onClick={()=>setSubType(v)} style={{flex:1,padding:"9px 4px",borderRadius:14,border:"none",fontWeight:"600",fontSize:12,cursor:"pointer",background:subType===v?"#FF9500":"var(--bg3,#E5E5EA)",color:subType===v?"#fff":"var(--text2,#3C3C43)"}}>{l}</button>
+          ))}
+        </div>
+        <label style={S.label}>名稱</label>
+        <input style={S.inputField} placeholder="例：Netflix、車貸" value={name} onChange={e=>setName(e.target.value)} autoFocus/>
+        <label style={S.label}>每{subType==="installment"?"期":"次"}金額 (NT$)</label>
+        <input type="number" inputMode="decimal" style={S.inputField} placeholder="0" value={amount} onChange={e=>setAmount(e.target.value)}/>
+        <label style={S.label}>分類</label>
+        <div style={{...S.catGrid,marginBottom:4}}>
+          {cats.map(c=>(
+            <button key={c} onClick={()=>setCat(c)} style={{...S.catBtn,...(cat===c?{background:"#FF9500",color:"#fff",borderColor:"#FF9500"}:{})}}>{ICONS[c]||"🔁"} {c}</button>
+          ))}
+        </div>
+        {subType==="installment"?(
+          <>
+            <label style={S.label}>總期數</label>
+            <input type="number" inputMode="numeric" style={S.inputField} value={totalMonths} onChange={e=>setTotalMonths(e.target.value)}/>
+            <label style={S.label}>已付期數</label>
+            <input type="number" inputMode="numeric" style={S.inputField} value={paidMonths} onChange={e=>setPaidMonths(e.target.value)}/>
+          </>
+        ):(
+          <>
+            <label style={S.label}>扣款頻率</label>
+            <div style={{display:"flex",gap:6,marginBottom:4}}>
+              {[["monthly","每月"],["yearly","每年"],["quarterly","每季"]].map(([v,l])=>(
+                <button key={v} onClick={()=>setFreq(v)} style={{flex:1,padding:"9px 0",borderRadius:14,border:"none",fontWeight:"600",fontSize:13,cursor:"pointer",background:freq===v?"#007AFF":"var(--bg3,#E5E5EA)",color:freq===v?"#fff":"var(--text2,#3C3C43)"}}>{l}</button>
+              ))}
+            </div>
+            {freq==="yearly"&&<><label style={S.label}>扣款月份 (1-12)</label><input type="number" inputMode="numeric" style={S.inputField} min="1" max="12" value={month} onChange={e=>setMonth(e.target.value)}/></>}
+            <label style={S.label}>扣款日 (1-31)</label>
+            <input type="number" inputMode="numeric" style={{...S.inputField,marginBottom:16}} min="1" max="31" value={day} onChange={e=>setDay(e.target.value)}/>
+          </>
+        )}
+      </div>
+    </div>
   );
 }
 
 function GoalModal({onAdd,onClose}){
   const [name,setName]=useState("");
-  const [category,setCat]=useState(GOAL_CATS[0]);
   const [target,setTarget]=useState("");
-  const [saved,setSaved]=useState("");
-  const [deadline,setDeadline]=useState("");
-  const submit=()=>{ if(!name||!target)return; onAdd({name,category,target:Number(target),saved:Number(saved)||0,deadline}); onClose(); };
+  const [cat,setCat]=useState(GOAL_CATS[0]);
+  const submit=()=>{
+    if(!name||!target)return;
+    onAdd({name,target:Number(target),category:cat,saved:0});
+    onClose();
+  };
   return (
-    <Modal title="新增存款目標" onClose={onClose}>
-      <label style={S.label}>目標名稱</label>
-      <input style={S.inputField} placeholder="如：日本旅遊、買車頭期款" value={name} onChange={e=>setName(e.target.value)}/>
-      <label style={S.label}>分類</label>
-      <div style={S.catGrid}>{GOAL_CATS.map(c=>(<button key={c} style={{...S.catBtn,...(category===c?{background:"#007AFF",color:"#fff",borderColor:"#007AFF"}:{})}} onClick={()=>setCat(c)}>{ICONS[c]||"🎯"} {c}</button>))}</div>
-      <label style={S.label}>目標金額</label>
-      <div style={S.amtRow}><span style={S.amtCur}>NT$</span><input style={S.amtInput} type="number" placeholder="0" value={target} onChange={e=>setTarget(e.target.value)} inputMode="numeric"/></div>
-      <label style={S.label}>已存金額（可選）</label>
-      <input style={S.inputField} type="number" placeholder="0" value={saved} onChange={e=>setSaved(e.target.value)} inputMode="numeric"/>
-      <label style={S.label}>目標日期（可選）</label>
-      <input style={S.inputField} type="date" value={deadline} onChange={e=>setDeadline(e.target.value)}/>
-      <button style={S.primaryBtn} onClick={submit}>建立目標</button>
-    </Modal>
+    <div style={{...S.sheet,overflowY:"auto"}}>
+      <div style={S.modalHeader}>
+        <button style={S.toolBtn} onClick={onClose}>取消</button>
+        <span style={{fontWeight:"700",fontSize:16}}>新增存款目標</span>
+        <button style={{...S.toolBtn,background:"#34C759",color:"#fff"}} onClick={submit}>完成</button>
+      </div>
+      <div style={{padding:"12px 16px"}}>
+        <label style={S.label}>目標名稱</label>
+        <input style={S.inputField} placeholder="例：旅遊基金" value={name} onChange={e=>setName(e.target.value)} autoFocus/>
+        <label style={S.label}>目標金額 (NT$)</label>
+        <input type="number" inputMode="decimal" style={S.inputField} placeholder="0" value={target} onChange={e=>setTarget(e.target.value)}/>
+        <label style={S.label}>分類</label>
+        <div style={S.catGrid}>
+          {GOAL_CATS.map(c=>(
+            <button key={c} onClick={()=>setCat(c)} style={{...S.catBtn,...(cat===c?{background:"#34C759",color:"#fff",borderColor:"#34C759"}:{})}}>{ICONS[c]||"🎯"} {c}</button>
+          ))}
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -2117,284 +2315,209 @@ function VoiceModal({onAdd,onClose,showToast}){
   const [listening,setListening]=useState(false);
   const [transcript,setTranscript]=useState("");
   const [parsed,setParsed]=useState(null);
-  const [loading,setLoading]=useState(false);
   const recRef=useRef(null);
-  const start=()=>{ const SR=window.SpeechRecognition||window.webkitSpeechRecognition; if(!SR){showToast("此瀏覽器不支援語音","warn");return;}
-    const r=new SR(); r.lang="zh-TW"; r.interimResults=true;
-    r.onresult=e=>setTranscript(Array.from(e.results).map(x=>x[0].transcript).join(""));
-    r.onend=()=>setListening(false); r.start(); setListening(true); recRef.current=r; };
-  const stop=()=>{ recRef.current?.stop(); setListening(false); };
-  const parse=async()=>{ if(!transcript)return; setLoading(true);
-    try{ const res=await fetch("https://api.anthropic.com/v1/messages",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({model:"claude-sonnet-4-6",max_tokens:300,messages:[{role:"user",content:`從語音記帳文字提取資訊，只回傳JSON：「${transcript}」\n格式：{"type":"expense|income|saving","category":"分類","amount":數字,"note":"備註","date":"YYYY-MM-DD"}\n今天：${today()}`}]})});
-      const data=await res.json(); const text=data.content?.map(c=>c.text||"").join("")||"";
-      setParsed(JSON.parse(text.replace(/```json|```/g,"").trim()));
-    }catch{ showToast("解析失敗","warn"); } setLoading(false); };
+  const startListen=()=>{
+    const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+    if(!SR){showToast("此瀏覽器不支援語音辨識","warn");return;}
+    const r=new SR(); r.lang="zh-TW"; r.interimResults=false;
+    r.onresult=e=>{
+      const text=e.results[0][0].transcript;
+      setTranscript(text);
+      const numMatch=text.match(/\d[\d,]*/g);
+      const amount=numMatch?Number(numMatch[0].replace(/,/g,"")):0;
+      let type="expense"; let cat="其他";
+      if(text.includes("收入")||text.includes("薪水")||text.includes("賺"))type="income";
+      DEFAULT_CATS.expense.forEach(c=>{ if(text.includes(c))cat=c; });
+      setParsed({type,amount,category:cat,note:text,date:today(),ccy:"TWD"});
+    };
+    r.onerror=()=>{setListening(false);showToast("語音辨識失敗","warn");};
+    r.onend=()=>setListening(false);
+    recRef.current=r; r.start(); setListening(true);
+  };
+  const confirm=()=>{ if(parsed&&parsed.amount>0){onAdd(parsed);onClose();} else showToast("未偵測到金額","warn"); };
   return (
-    <Modal title="語音記帳" onClose={onClose}>
-      <div style={{textAlign:"center",padding:"20px 0"}}>
-        <button style={{...S.voiceBtn,background:listening?"#FF3B30":"#007AFF"}} onClick={listening?stop:start}>{listening?"⏹ 停止":"🎙 開始說話"}</button>
-        {listening && <p style={{color:"#FF3B30",fontSize:13,marginTop:8}}>聆聽中…</p>}
+    <div style={{...S.sheet,overflowY:"auto"}}>
+      <div style={S.modalHeader}>
+        <button style={S.toolBtn} onClick={onClose}>取消</button>
+        <span style={{fontWeight:"700",fontSize:16}}>🎤 語音記帳</span>
+        <button style={{...S.toolBtn,background:"#007AFF",color:"#fff",opacity:parsed?.amount>0?1:0.4}} onClick={confirm}>完成</button>
       </div>
-      {transcript && (<><div style={S.transcriptBox}><strong>識別：</strong>{transcript}</div>
-        <button style={S.primaryBtn} onClick={parse} disabled={loading}>{loading?"解析中…":"🤖 AI 解析"}</button></>)}
-      {parsed && (<div style={{...S.card,marginTop:12}}><p style={{fontWeight:"600",marginBottom:8}}>解析結果</p>
-        {[["類型",TYPE_LABEL[parsed.type]],["分類",parsed.category],["金額","NT$ "+fmtMoney(parsed.amount)],["備註",parsed.note],["日期",parsed.date]].map(([k,v])=>v?<div key={k} style={{display:"flex",justifyContent:"space-between",marginBottom:4}}><span style={{color:"#8E8E93",fontSize:13}}>{k}</span><span style={{fontSize:13}}>{v}</span></div>:null)}
-        <button style={{...S.primaryBtn,marginTop:8}} onClick={()=>{onAdd(parsed);onClose();}}>確認記帳</button></div>)}
-      <p style={{fontSize:12,color:"#8E8E93",textAlign:"center",marginTop:12}}>範例：「午餐花一百五十元」「收到薪水五萬」</p>
-    </Modal>
+      <div style={{padding:24,textAlign:"center"}}>
+        <button onClick={startListen} style={{width:88,height:88,borderRadius:"50%",background:listening?"#FF3B30":"#007AFF",border:"none",color:"#fff",fontSize:32,cursor:"pointer",boxShadow:`0 4px 20px ${listening?"rgba(255,59,48,0.4)":"rgba(0,122,255,0.3)"}`}}>
+          {listening?"⏹":"🎤"}
+        </button>
+        <p style={{color:"var(--sub,#8E8E93)",fontSize:14,marginTop:16}}>{listening?"聆聽中…":"點擊開始語音輸入"}</p>
+        {transcript&&<div style={{...S.transcriptBox,marginTop:12}}>{transcript}</div>}
+        {parsed&&parsed.amount>0&&(
+          <div style={{...S.card,marginTop:12,textAlign:"left"}}>
+            <p style={{margin:"0 0 4px",fontSize:13,color:"var(--sub,#8E8E93)"}}>解析結果</p>
+            <p style={{margin:0,fontWeight:"700",fontSize:22,color:parsed.type==="income"?"#34C759":"#FF3B30"}}>
+              {parsed.type==="income"?"+":"-"} NT$ {fmtMoney(parsed.amount)}
+            </p>
+            <p style={{margin:"4px 0 0",fontSize:13,color:"var(--sub,#8E8E93)"}}>{parsed.category} · {parsed.note}</p>
+          </div>
+        )}
+      </div>
+    </div>
   );
 }
 
 function ReceiptModal({onAdd,onClose,showToast}){
-  const [preview,setPreview]=useState(null);
-  const [b64,setB64]=useState(null);
-  const [loading,setLoading]=useState(false);
-  const [parsed,setParsed]=useState(null);
-  const inRef=useRef();
-  const onFile=(e)=>{ const f=e.target.files[0]; if(!f)return; const r=new FileReader();
-    r.onload=ev=>{ setPreview(ev.target.result); setB64(ev.target.result.split(",")[1]); }; r.readAsDataURL(f); };
-  const scan=async()=>{ if(!b64){showToast("請先選圖片","warn");return;} setLoading(true);
-    try{ const res=await fetch("https://api.anthropic.com/v1/messages",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({model:"claude-sonnet-4-6",max_tokens:400,messages:[{role:"user",content:[{type:"image",source:{type:"base64",media_type:"image/jpeg",data:b64}},{type:"text",text:`分析收據，只回傳JSON：{"type":"expense","category":"餐飲|購物|交通|其他","amount":數字,"note":"商家","date":"YYYY-MM-DD"}\n今天：${today()}`}]}]})});
-      const data=await res.json(); const text=data.content?.map(c=>c.text||"").join("")||"";
-      setParsed(JSON.parse(text.replace(/```json|```/g,"").trim()));
-    }catch{ showToast("掃描失敗","warn"); } setLoading(false); };
+  const [img,setImg]=useState(null);
+  const [form,setForm]=useState({amount:"",note:"",category:"餐飲"});
+  const fileRef=useRef(null);
+  const handleFile=e=>{
+    const f=e.target.files?.[0]; if(!f)return;
+    const r=new FileReader(); r.onload=ev=>setImg(ev.target.result); r.readAsDataURL(f);
+  };
+  const confirm=()=>{
+    if(!form.amount||Number(form.amount)<=0){showToast("請填入金額","warn");return;}
+    onAdd({type:"expense",amount:Number(form.amount),category:form.category,note:form.note,date:today(),ccy:"TWD"});
+    onClose();
+  };
   return (
-    <Modal title="掃描收據" onClose={onClose}>
-      <input ref={inRef} type="file" accept="image/*" capture="environment" style={{display:"none"}} onChange={onFile}/>
-      <button style={S.primaryBtn} onClick={()=>inRef.current?.click()}>📷 拍照 / 選擇圖片</button>
-      {preview && <img src={preview} style={{width:"100%",borderRadius:12,marginTop:12,maxHeight:200,objectFit:"cover"}} alt="receipt"/>}
-      {b64 && !parsed && <button style={{...S.primaryBtn,marginTop:8}} onClick={scan} disabled={loading}>{loading?"掃描中…":"🔍 AI 掃描辨識"}</button>}
-      {parsed && (<div style={{...S.card,marginTop:12}}><p style={{fontWeight:"600",marginBottom:8}}>掃描結果</p>
-        {[["分類",parsed.category],["金額","NT$ "+fmtMoney(parsed.amount)],["備註",parsed.note],["日期",parsed.date]].map(([k,v])=>v?<div key={k} style={{display:"flex",justifyContent:"space-between",marginBottom:4}}><span style={{color:"#8E8E93",fontSize:13}}>{k}</span><span style={{fontSize:13}}>{v}</span></div>:null)}
-        <button style={{...S.primaryBtn,marginTop:8}} onClick={()=>{onAdd(parsed);onClose();}}>確認記帳</button></div>)}
-    </Modal>
+    <div style={{...S.sheet,overflowY:"auto"}}>
+      <div style={S.modalHeader}>
+        <button style={S.toolBtn} onClick={onClose}>取消</button>
+        <span style={{fontWeight:"700",fontSize:16}}>📷 掃描收據</span>
+        <button style={{...S.toolBtn,background:"#007AFF",color:"#fff"}} onClick={confirm}>完成</button>
+      </div>
+      <div style={{padding:"12px 16px"}}>
+        <input ref={fileRef} type="file" accept="image/*" capture="environment" style={{display:"none"}} onChange={handleFile}/>
+        <button style={S.primaryBtn} onClick={()=>fileRef.current?.click()}>📷 拍照 / 選圖</button>
+        {img&&<img src={img} alt="receipt" style={{width:"100%",borderRadius:14,marginTop:12}}/>}
+        <label style={S.label}>分類</label>
+        <div style={S.catGrid}>
+          {DEFAULT_CATS.expense.map(c=>(
+            <button key={c} onClick={()=>setForm(f=>({...f,category:c}))} style={{...S.catBtn,...(form.category===c?{background:"#FF3B30",color:"#fff",borderColor:"#FF3B30"}:{})}}>{ICONS[c]||"📦"} {c}</button>
+          ))}
+        </div>
+        <label style={S.label}>金額 (NT$)</label>
+        <input type="number" inputMode="decimal" style={S.inputField} placeholder="0" value={form.amount} onChange={e=>setForm(f=>({...f,amount:e.target.value}))} autoFocus/>
+        <label style={S.label}>備註</label>
+        <input style={S.inputField} placeholder="商家或備註" value={form.note} onChange={e=>setForm(f=>({...f,note:e.target.value}))}/>
+      </div>
+    </div>
   );
 }
 
 function CSVModal({onImport,onClose}){
-  const [err,setErr]=useState("");
-  const inRef=useRef();
-  const onFile=(e)=>{ const f=e.target.files[0]; if(!f)return; const r=new FileReader();
-    r.onload=ev=>{ try{ const rows=ev.target.result.replace(/^\uFEFF/,"").split("\n").filter(x=>x.trim());
-      const h=rows[0].split(","); const iD=h.indexOf("日期"),iT=h.indexOf("類型"),iC=h.indexOf("分類"),iA=h.indexOf("金額"),iN=h.indexOf("備註");
-      const rev=Object.fromEntries(Object.entries(TYPE_LABEL).map(([k,v])=>[v,k]));
-      const txs=rows.slice(1).map(row=>{ const c=row.split(",");
-        return {id:uid(),createdAt:new Date().toISOString(),date:iD>=0?c[iD]:today(),type:iT>=0?(rev[c[iT]]||"expense"):"expense",category:iC>=0?c[iC]:"其他",amount:iA>=0?Number(c[iA])||0:0,note:iN>=0?c[iN]:""};
-      }).filter(t=>t.amount>0); onImport(txs); onClose();
-    }catch{ setErr("格式錯誤，需含欄位：日期,類型,分類,金額,備註"); } }; r.readAsText(f,"UTF-8"); };
+  const [preview,setPreview]=useState([]);
+  const fileRef=useRef(null);
+  const handleFile=e=>{
+    const f=e.target.files?.[0]; if(!f)return;
+    const r=new FileReader();
+    r.onload=ev=>{
+      const lines=ev.target.result.split("\n").filter(Boolean);
+      const rows=lines.slice(1).map(l=>{
+        const parts=l.split(",").map(s=>s.trim().replace(/^"|"$/g,""));
+        return {date:parts[0]||today(),type:parts[1]||"expense",category:parts[2]||"其他",amount:Number(parts[3])||0,note:parts[4]||"",ccy:parts[5]||"TWD"};
+      }).filter(r=>r.amount>0);
+      setPreview(rows);
+    };
+    r.readAsText(f,"UTF-8");
+  };
+  const doImport=()=>{ onImport(preview); onClose(); };
   return (
-    <Modal title="CSV 匯入" onClose={onClose}>
-      <div style={{...S.card,background:"#F0F7FF"}}><p style={{fontSize:13,margin:0,color:"#005BBB"}}>需含標題行：<br/><code>日期,類型,分類,金額,備註</code></p></div>
-      <input ref={inRef} type="file" accept=".csv" style={{display:"none"}} onChange={onFile}/>
-      <button style={{...S.primaryBtn,marginTop:12}} onClick={()=>inRef.current?.click()}>選擇 CSV 檔案</button>
-      {err && <p style={{color:"#FF3B30",fontSize:13,marginTop:8}}>{err}</p>}
-    </Modal>
-  );
-}
-
-// ══════════════ SHARED COMPONENTS ════════════════════════════════
-function TxRow({tx,onDelete,showDate}){
-  const c=TYPE_COLOR[tx.type]||TYPE_COLOR.expense;
-  const foreign = tx.ccy && tx.ccy!==BASE_CCY;
-  const amtLabel = foreign ? fmtCcy(tx.amount,tx.ccy) : `NT$ ${fmtMoney(tx.amount)}`;
-  return (
-    <div className="pressable" style={S.txRow}>
-      <div style={{...S.txIcon,background:c.light}}><span style={{fontSize:18}}>{ICONS[tx.category]||"📦"}</span></div>
-      <div style={{flex:1}}>
-        <div style={{display:"flex",justifyContent:"space-between"}}>
-          <span style={{fontSize:14,fontWeight:"500"}}>{tx.category}</span>
-          <span style={{fontSize:14,fontWeight:"600",color:tx.type==="income"?"#34C759":"var(--text,#1C1C1E)"}}>{tx.type==="income"?"+":"-"}{amtLabel}</span>
-        </div>
-        <div style={{display:"flex",justifyContent:"space-between",marginTop:2}}>
-          <span style={{fontSize:12,color:"#8E8E93"}}>{tx.note||TYPE_LABEL[tx.type]}{foreign?` · ≈NT$${fmtMoney(toTWD(tx.amount,tx.ccy))}`:""}</span>
-          <span style={{fontSize:12,color:"#C7C7CC"}}>{showDate?tx.date:fmtDate(tx.date)}</span>
-        </div>
+    <div style={{...S.sheet,overflowY:"auto"}}>
+      <div style={S.modalHeader}>
+        <button style={S.toolBtn} onClick={onClose}>取消</button>
+        <span style={{fontWeight:"700",fontSize:16}}>📊 CSV 匯入</span>
+        <button style={{...S.toolBtn,background:"#007AFF",color:"#fff",opacity:preview.length?1:0.4}} onClick={doImport} disabled={!preview.length}>匯入 {preview.length?`(${preview.length}筆)`:""}</button>
       </div>
-      <button style={S.delBtn} onClick={()=>onDelete(tx.id)}>✕</button>
+      <div style={{padding:"12px 16px"}}>
+        <input ref={fileRef} type="file" accept=".csv,text/csv" style={{display:"none"}} onChange={handleFile}/>
+        <button style={S.primaryBtn} onClick={()=>fileRef.current?.click()}>選擇 CSV 檔案</button>
+        <div style={{...S.hintBox,marginTop:12}}>格式：日期, 類型, 分類, 金額, 備註[, 幣別]<br/>類型：expense / income / saving</div>
+        {preview.length>0&&(
+          <div style={{marginTop:12}}>
+            <p style={{fontSize:13,color:"var(--sub,#8E8E93)",marginBottom:8}}>預覽前 5 筆（共 {preview.length} 筆）</p>
+            {preview.slice(0,5).map((r,i)=>(
+              <div key={i} style={{...S.txRow,marginBottom:4}}>
+                <span style={{fontSize:11,color:"var(--sub,#8E8E93)",flexShrink:0}}>{r.date}</span>
+                <span style={{fontSize:13,flex:1,margin:"0 8px",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{r.category} {r.note}</span>
+                <span style={{fontWeight:"600",color:r.type==="income"?"#34C759":"#FF3B30",flexShrink:0}}>NT$ {fmtMoney(r.amount)}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
-function Chip({label,val}){ return <div style={{textAlign:"center"}}><p style={{margin:0,fontSize:11,color:"rgba(255,255,255,0.7)"}}>{label}</p><p style={{margin:0,fontSize:14,fontWeight:"600",color:"#fff"}}>NT$ {fmtMoney(val)}</p></div>; }
-function MonthNav({current,onChange,mode}){
-  const prev=()=>{ if(mode==="year"){ onChange(String(Number(current)-1)); } else { const d=new Date(current+"-01"); d.setMonth(d.getMonth()-1); onChange(d.toISOString().slice(0,7)); } };
-  const next=()=>{ if(mode==="year"){ const n=String(Number(current)+1); if(n<=today().slice(0,4))onChange(n); } else { const d=new Date(current+"-01"); d.setMonth(d.getMonth()+1); const nm=d.toISOString().slice(0,7); if(nm<=today().slice(0,7))onChange(nm); } };
-  const label=mode==="year"?`${current} 年`:`${current.split("-")[0]} 年 ${Number(current.split("-")[1])} 月`;
-  return <div style={S.monthNav}><button style={S.navArrow} onClick={prev}>‹</button><span style={{fontWeight:"600",fontSize:16}}>{label}</span><button style={S.navArrow} onClick={next}>›</button></div>;
-}
-function Section({title,sub}){ return <div style={S.sectionHeader}><span style={{fontWeight:"600",fontSize:15}}>{title}</span>{sub&&<span style={{fontSize:12,color:"#8E8E93"}}>{sub}</span>}</div>; }
-function Empty({icon,msg}){ return <div style={S.empty}><span style={{fontSize:40}}>{icon}</span><p style={{color:"#8E8E93",fontSize:14,margin:"8px 0 0"}}>{msg}</p></div>; }
-function TabBar({tab,setTab}){
-  const tabs=[["home","🏠","首頁"],["txns","📋","明細"],["recurring","🔁","固定"],["goals","🎯","目標"],["assets","💎","資產"],["stats","📊","統計"],["more","☁️","同步"]];
-  return <div style={S.tabBar}>{tabs.map(([id,i,l])=>(<button key={id} style={{...S.tabBtn,...(tab===id?S.tabActive:{})}} onClick={()=>setTab(id)}><span style={{fontSize:19,display:"inline-block",transition:"transform 0.3s var(--ease-spring)",transform:tab===id?"scale(1.18)":"scale(1)"}}>{i}</span><span style={{fontSize:9,marginTop:2,color:tab===id?"#007AFF":"#8E8E93",transition:"color 0.2s ease"}}>{l}</span></button>))}</div>;
-}
-function Modal({title,onClose,children}){
-  const [closing,setClosing]=useState(false);
-  const doClose=()=>{ setClosing(true); setTimeout(onClose,240); };
-  return <div className="anim-overlay" style={{...S.overlay,animation:closing?"overlayFade 0.24s ease reverse both":"overlayFade 0.24s ease both"}} onClick={doClose}>
-    <div style={{...S.sheet,animation:closing?"sheetUp 0.26s var(--ease-ios) reverse both":"sheetUp 0.34s var(--ease-ios) both"}} onClick={e=>e.stopPropagation()}>
-      <div style={S.handle}/>
-      <div style={S.modalHeader}><span style={{fontWeight:"700",fontSize:17}}>{title}</span><button style={S.closeBtn} onClick={doClose}>✕</button></div>
-      <div className="smooth-scroll" style={{overflowY:"auto",maxHeight:"72vh",paddingBottom:20}}>{children}</div>
-    </div>
-  </div>;
-}
 
-// ══════════════ STYLES ════════════════════════════════════════════
-const S={
-  shell:{fontFamily:"-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif",background:"var(--bg,#F2F2F7)",minHeight:"100vh",maxWidth:430,margin:"0 auto",position:"relative",overflowX:"hidden"},
-  statusBar:{height:8,background:"var(--bg,#F2F2F7)"},
-  content:{paddingBottom:"calc(80px + env(safe-area-inset-bottom))"},
-  loadWrap:{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",height:"100vh"},
-  spinner:{width:32,height:32,border:"3px solid #E5E5EA",borderTop:"3px solid #007AFF",borderRadius:"50%",animation:"spin 0.8s linear infinite"},
-  tab:{padding:"0 16px"},
-  pageTitle:{fontSize:24,fontWeight:"700",margin:"16px 0 12px"},
-  balanceCard:{background:"linear-gradient(135deg,#007AFF 0%,#5856D6 100%)",borderRadius:36,padding:"20px 20px 16px",marginBottom:12,color:"#fff"},
-  balanceLabel:{margin:0,fontSize:13,color:"rgba(255,255,255,0.8)"},
-  balanceAmt:{margin:"4px 0 14px",fontSize:34,fontWeight:"700"},
-  balanceRow:{display:"flex",justifyContent:"space-between"},
-  recBanner:{display:"flex",alignItems:"center",background:"var(--card,#FFF8EE)",border:"1px solid var(--sep,#FFE8B0)",borderRadius:20,padding:"12px 14px",marginBottom:12,cursor:"pointer",fontSize:14},
-  pendingWrap:{background:"var(--card,#FFF1F0)",border:"1px solid var(--sep,#FFD0CC)",borderRadius:22,padding:12,marginBottom:12},
-  pendingHeader:{display:"flex",alignItems:"center",gap:8,marginBottom:8},
-  pendingCount:{background:"#FF3B30",color:"#fff",fontSize:12,fontWeight:"700",minWidth:20,height:20,borderRadius:10,display:"inline-flex",alignItems:"center",justifyContent:"center",padding:"0 6px"},
-  pendingRow:{background:"var(--card,#fff)",borderRadius:18,padding:"12px 14px",marginBottom:8},
-  pendConfirm:{flex:1,padding:"9px",background:"#34C759",color:"#fff",border:"none",borderRadius:14,fontSize:13,fontWeight:"600",cursor:"pointer"},
-  pendEdit:{padding:"9px 14px",background:"#EFF6FF",color:"#007AFF",border:"none",borderRadius:14,fontSize:13,fontWeight:"600",cursor:"pointer"},
-  pendDismiss:{padding:"9px 14px",background:"#F2F2F7",color:"#8E8E93",border:"none",borderRadius:14,fontSize:13,fontWeight:"600",cursor:"pointer"},
-  goalBanner:{display:"flex",alignItems:"center",background:"var(--card,#fff)",borderRadius:20,padding:"12px 14px",marginBottom:12,fontSize:14},
-  recTotal:{background:"var(--card,#FFF8EE)",borderRadius:22,padding:16,marginBottom:12},
-  recRow:{display:"flex",alignItems:"center",gap:10,background:"var(--card,#fff)",borderRadius:24,padding:"12px 14px",marginBottom:6},
-  assetRow:{display:"flex",alignItems:"center",gap:6,background:"var(--card,#fff)",borderRadius:18,padding:"10px 12px",marginBottom:5},
-  miniLabel:{margin:0,fontSize:12,color:"#8E8E93"},
-  bigNum:{margin:"2px 0 0",fontSize:22,fontWeight:"700"},
-  quickRow:{display:"flex",gap:8,marginBottom:16},
-  quickBtn:{flex:1,display:"flex",flexDirection:"column",alignItems:"center",background:"var(--card,#fff)",border:"none",borderRadius:28,padding:"12px 8px",cursor:"pointer",gap:4},
-  quickLabel:{fontSize:10,color:"var(--text2,#3C3C43)",fontWeight:"500"},
-  sectionHeader:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8,marginTop:8},
-  txRow:{display:"flex",alignItems:"center",gap:10,background:"var(--card,#fff)",borderRadius:24,padding:"12px 14px",marginBottom:6},
-  txIcon:{width:40,height:40,borderRadius:14,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0},
-  monthNav:{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"12px 0",marginBottom:8},
-  navArrow:{background:"none",border:"none",fontSize:22,color:"#007AFF",cursor:"pointer",padding:"0 8px"},
-  card:{background:"var(--card,#fff)",borderRadius:28,padding:16,marginBottom:12},
-  cardTitle:{margin:0,fontSize:14,fontWeight:"600",color:"var(--text2,#3C3C43)"},
-  empty:{textAlign:"center",padding:"40px 0"},
-  tabBar:{position:"fixed",bottom:0,left:"50%",transform:"translateX(-50%)",width:"100%",maxWidth:430,background:"var(--tabbar-bg,rgba(255,255,255,0.92))",backdropFilter:"blur(20px)",borderTop:"1px solid var(--sep,#E5E5EA)",display:"flex",paddingBottom:"env(safe-area-inset-bottom)",zIndex:100},
-  tabBtn:{flex:1,display:"flex",flexDirection:"column",alignItems:"center",padding:"7px 0 12px",background:"none",border:"none",cursor:"pointer"},
-  tabActive:{color:"#007AFF"},
-  fab:{position:"fixed",bottom:"calc(80px + env(safe-area-inset-bottom))",right:20,width:56,height:56,borderRadius:28,background:"#007AFF",color:"#fff",border:"none",fontSize:28,fontWeight:"300",cursor:"pointer",boxShadow:"0 4px 16px rgba(0,122,255,0.4)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:99},
-  overlay:{position:"fixed",inset:0,background:"rgba(0,0,0,0.4)",display:"flex",alignItems:"flex-end",zIndex:200},
-  sheet:{background:"var(--bg,#F2F2F7)",borderRadius:"44px 44px 0 0",width:"100%",maxWidth:430,margin:"0 auto",padding:"0 16px",paddingBottom:34},
-  handle:{width:36,height:4,background:"#C7C7CC",borderRadius:2,margin:"8px auto 0"},
-  modalHeader:{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"12px 0",borderBottom:"1px solid var(--sep,#E5E5EA)",marginBottom:16},
-  closeBtn:{background:"none",border:"none",fontSize:16,color:"#8E8E93",cursor:"pointer",padding:"4px 8px"},
-  typeRow:{display:"flex",gap:6,marginBottom:8},
-  typeBtn:{flex:1,padding:"8px 4px",borderRadius:14,border:"1.5px solid var(--sep,#E5E5EA)",background:"var(--card,#fff)",fontSize:13,fontWeight:"500",cursor:"pointer",color:"var(--text2,#3C3C43)"},
-  label:{fontSize:12,fontWeight:"600",color:"var(--sub,#8E8E93)",textTransform:"uppercase",letterSpacing:0.5,display:"block",marginBottom:6,marginTop:12},
-  catGrid:{display:"flex",flexWrap:"wrap",gap:6,marginBottom:4},
-  catBtn:{padding:"6px 10px",borderRadius:14,border:"1.5px solid var(--sep,#E5E5EA)",background:"var(--card,#fff)",fontSize:12,cursor:"pointer",color:"var(--text2,#3C3C43)"},
-  amtRow:{display:"flex",alignItems:"center",background:"var(--card,#fff)",borderRadius:16,border:"1.5px solid var(--sep,#E5E5EA)",overflow:"hidden",marginBottom:4},
-  amtCur:{padding:"12px",fontSize:16,color:"var(--sub,#8E8E93)",borderRight:"1px solid var(--sep,#E5E5EA)"},
-  amtInput:{flex:1,padding:12,fontSize:22,fontWeight:"600",border:"none",outline:"none",background:"transparent",width:"100%",color:"var(--text,#000)"},
-  inputField:{width:"100%",padding:12,borderRadius:22,border:"1.5px solid var(--sep,#E5E5EA)",background:"var(--card,#fff)",fontSize:15,outline:"none",boxSizing:"border-box",marginBottom:4,color:"var(--text,#000)"},
-  primaryBtn:{width:"100%",padding:14,background:"#007AFF",color:"#fff",border:"none",borderRadius:26,fontSize:16,fontWeight:"600",cursor:"pointer",marginTop:16},
-  smallBtn:{padding:"8px 16px",background:"var(--bg3,#F2F2F7)",color:"#007AFF",border:"none",borderRadius:14,fontSize:13,fontWeight:"600",cursor:"pointer"},
-  chipBtn:{padding:"7px 12px",background:"var(--card,#fff)",color:"var(--text2,#3C3C43)",border:"1.5px solid var(--sep,#E5E5EA)",borderRadius:18,fontSize:13,fontWeight:"500",cursor:"pointer"},
-  altRow:{display:"flex",alignItems:"center",gap:8,marginTop:12,flexWrap:"wrap"},
-  altBtn:{padding:"6px 12px",background:"var(--bg3,#F2F2F7)",border:"none",borderRadius:14,fontSize:12,cursor:"pointer",color:"#007AFF",fontWeight:"500"},
-  voiceBtn:{padding:"16px 40px",borderRadius:30,border:"none",color:"#fff",fontSize:16,fontWeight:"600",cursor:"pointer"},
-  transcriptBox:{background:"var(--bg3,#F2F2F7)",borderRadius:16,padding:12,fontSize:13,lineHeight:1.6,marginBottom:12,color:"var(--text2,#3C3C43)"},
-  filterRow:{display:"flex",gap:6,marginBottom:12,overflowX:"auto",paddingBottom:4},
-  filterBtn:{padding:"6px 14px",borderRadius:20,border:"1.5px solid var(--sep,#E5E5EA)",background:"var(--card,#fff)",fontSize:13,cursor:"pointer",whiteSpace:"nowrap",color:"var(--text2,#3C3C43)"},
-  filterActive:{background:"#007AFF",color:"#fff",borderColor:"#007AFF"},
-  addRecBtn:{width:"100%",padding:14,background:"var(--card,#fff)",color:"#007AFF",border:"1.5px dashed #007AFF",borderRadius:18,fontSize:15,fontWeight:"600",cursor:"pointer",marginTop:8},
-  delBtn:{background:"none",border:"none",fontSize:14,color:"#C7C7CC",cursor:"pointer",padding:4,marginLeft:4},
-  catIcon:{fontSize:22,width:36,textAlign:"center"},
-  hintBox:{background:"#FFF8EE",border:"1px solid #FFE8B0",borderRadius:14,padding:"8px 12px",fontSize:12,color:"#8E5500",marginTop:8},
-  progBg:{height:8,background:"var(--bg3,#F2F2F7)",borderRadius:4,overflow:"hidden",marginTop:4},
-  progFill:{height:"100%",background:"#34C759",borderRadius:4,transition:"width 0.3s"},
-  goalSummary:{background:"var(--card,#fff)",borderRadius:22,padding:16,marginBottom:12},
-  goalCard:{background:"var(--card,#fff)",borderRadius:22,padding:16,marginBottom:10},
-  depositBtn:{width:"100%",padding:10,background:"#EFF6FF",color:"#007AFF",border:"none",borderRadius:14,fontSize:13,fontWeight:"600",cursor:"pointer",marginTop:10},
-  goalActionBtn:{padding:"10px 12px",background:"#34C759",color:"#fff",border:"none",borderRadius:14,fontSize:13,fontWeight:"600",cursor:"pointer",whiteSpace:"nowrap"},
-  viewToggle:{display:"flex",gap:6,background:"var(--bg3,#E5E5EA)",borderRadius:14,padding:3,marginTop:12},
-  viewBtn:{flex:1,padding:"8px",borderRadius:12,border:"none",background:"transparent",fontSize:14,fontWeight:"600",color:"var(--sub,#8E8E93)",cursor:"pointer"},
-  viewBtnActive:{background:"var(--card,#fff)",color:"var(--text,#1C1C1E)",boxShadow:"0 1px 3px rgba(0,0,0,0.1)"},
-  recTotalRow:{},
-  goalSummaryRow:{},
-  toolBtn:{padding:"10px 14px",background:"var(--bg3,#F2F2F7)",color:"#007AFF",border:"none",borderRadius:14,fontSize:13,fontWeight:"600",cursor:"pointer"},
-  stepNum:{width:22,height:22,borderRadius:11,background:"#007AFF",color:"#fff",fontSize:12,fontWeight:"700",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,marginTop:1},
-  codeBlock:{display:"block",background:"var(--bg3,#F2F2F7)",borderRadius:12,padding:10,fontSize:11,color:"var(--text2,#3C3C43)",wordBreak:"break-all",lineHeight:1.6,whiteSpace:"pre-wrap"},
-  copyBtn:{padding:"4px 12px",background:"#007AFF",color:"#fff",border:"none",borderRadius:10,fontSize:12,cursor:"pointer",fontWeight:"500"},
-  toast:{position:"fixed",top:60,left:"50%",transform:"translateX(-50%)",padding:"10px 24px",borderRadius:24,color:"#fff",fontWeight:"600",fontSize:14,zIndex:300,boxShadow:"0 4px 16px rgba(0,0,0,0.2)",whiteSpace:"nowrap"},
-  lockWrap:{position:"fixed",top:0,left:0,right:0,bottom:0,background:"linear-gradient(160deg,#007AFF 0%,#5856D6 100%)",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:24,paddingTop:"calc(env(safe-area-inset-top) + 24px)",boxSizing:"border-box",zIndex:999},
-  lockIcon:{fontSize:52,marginBottom:12},
-  lockTitle:{color:"#fff",fontSize:22,fontWeight:"700",margin:"0 0 6px"},
-  lockSub:{color:"rgba(255,255,255,0.85)",fontSize:14,margin:"0 0 28px",textAlign:"center",lineHeight:1.5},
-  pinDots:{display:"flex",gap:14,marginBottom:28},
-  pinDot:{width:16,height:16,borderRadius:8,border:"2px solid rgba(255,255,255,0.7)"},
-  pinDotFill:{background:"#fff",borderColor:"#fff"},
-  pad:{display:"grid",gridTemplateColumns:"repeat(3,72px)",gap:16},
-  padBtn:{width:72,height:72,borderRadius:36,border:"none",background:"rgba(255,255,255,0.18)",color:"#fff",fontSize:26,fontWeight:"500",cursor:"pointer",backdropFilter:"blur(4px)"},
-  padText:{width:72,height:72,borderRadius:36,border:"none",background:"transparent",color:"#fff",fontSize:15,cursor:"pointer"},
-};
+// ══════════════════════════════════════════════════════════════════
+// LOCK SCREEN
+// ══════════════════════════════════════════════════════════════════
+function LockScreen({onUnlock,onBio,lockout}){
+  const [pin,setPin]=useState("");
+  const [err,setErr]=useState(0);
+  const [busy,setBusy]=useState(false);
+  const [remaining,setRemaining]=useState(lockoutRemaining());
 
-// ══════════════ LOCK SCREEN ═══════════════════════════════════════
-function LockGate({ onUnlocked }){
-  const existing = hasPIN();
-  const [mode,setMode]   = useState(existing ? "unlock" : "create");
-  const [pin,setPin]     = useState("");
-  const [firstPin,setFirstPin] = useState("");
-  const [err,setErr]     = useState("");
-  const [busy,setBusy]   = useState(false);
-  const [lockLeft,setLockLeft] = useState(lockoutRemaining());
-
-  // countdown timer when locked out
   useEffect(()=>{
-    if(lockLeft<=0) return;
-    const id=setInterval(()=>{ const r=lockoutRemaining(); setLockLeft(r); if(r<=0)clearInterval(id); },500);
-    return ()=>clearInterval(id);
-  },[lockLeft]);
-
-  // auto-prompt biometric on mount if enabled
-  useEffect(()=>{
-    if(existing && bioEnabled() && lockoutRemaining()<=0){ tryBio(); }
+    const t=setInterval(()=>setRemaining(lockoutRemaining()),500);
+    return ()=>clearInterval(t);
   },[]);
 
-  const titles = {
-    create:  { t:"設定 App 密碼", s:`建立一組 ${PIN_LEN} 位數密碼，用來鎖定與加密你的記帳資料` },
-    confirm: { t:"再次輸入密碼", s:"請再輸入一次以確認" },
-    unlock:  { t:"輸入密碼", s:`輸入你的 ${PIN_LEN} 位數密碼以解鎖` },
+  const tryPin=async()=>{
+    if(busy||pin.length!==PIN_LEN)return;
+    setBusy(true);
+    const ok=await unlockPIN(pin);
+    setBusy(false);
+    if(ok){ onUnlock(); }
+    else { setErr(failCount()); setPin(""); setRemaining(lockoutRemaining()); }
   };
 
-  const tryBio = async () => {
-    setErr("");
-    const ok = await bioUnlock();
-    if(ok) onUnlocked();
-    else setErr("生物辨識失敗，請改用密碼");
-  };
+  return (
+    <div style={{minHeight:"100vh",background:"var(--bg,#F2F2F7)",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:32}}>
+      <p style={{fontSize:40,margin:"0 0 8px"}}>🔐</p>
+      <p style={{fontSize:22,fontWeight:"700",margin:"0 0 4px",color:"var(--text,#000)"}}>輸入密碼</p>
+      <p style={{fontSize:13,color:"var(--sub,#8E8E93)",margin:"0 0 28px"}}>請輸入 {PIN_LEN} 位數密碼</p>
+      <input
+        type="password" inputMode="numeric" maxLength={PIN_LEN} autoFocus
+        value={pin} onChange={e=>setPin(e.target.value)}
+        onKeyDown={e=>e.key==="Enter"&&pin.length===PIN_LEN&&tryPin()}
+        style={{fontSize:28,letterSpacing:12,textAlign:"center",width:180,padding:"12px 16px",border:"2px solid var(--sep,#E5E5EA)",borderRadius:16,background:"var(--card,#fff)",color:"var(--text,#000)",outline:"none",marginBottom:16}}
+      />
+      {err>0&&<p style={{color:"#FF3B30",fontSize:13,margin:"0 0 8px"}}>密碼錯誤（{err}/{MAX_FAILS} 次）</p>}
+      {remaining>0&&<p style={{color:"#FF9500",fontSize:13,margin:"0 0 8px"}}>請等待 {Math.ceil(remaining/1000)} 秒</p>}
+      <button onClick={tryPin} disabled={pin.length!==PIN_LEN||busy||remaining>0} style={{padding:"14px 48px",borderRadius:16,border:"none",background:"#007AFF",color:"#fff",fontSize:16,fontWeight:"600",cursor:"pointer",opacity:(pin.length===PIN_LEN&&!remaining)?1:0.4}}>
+        {busy?"驗證中…":"解鎖"}
+      </button>
+      {onBio&&(
+        <button onClick={onBio} style={{marginTop:16,padding:"12px 32px",borderRadius:16,border:"none",background:"var(--bg3,#E5E5EA)",color:"var(--text2,#3C3C43)",fontSize:15,fontWeight:"600",cursor:"pointer"}}>
+          👤 Face ID / 指紋
+        </button>
+      )}
+    </div>
+  );
+}
 
-  const press = (d) => {
-    if(busy || lockLeft>0) return;
-    setErr("");
-    const next = (pin + d).slice(0,PIN_LEN);
-    setPin(next);
-    if(next.length === PIN_LEN){ setBusy(true); setTimeout(()=>handleFull(next),120); }
+// ══════════════════════════════════════════════════════════════════
+// ROOT
+// ══════════════════════════════════════════════════════════════════
+function Root(){
+  const [locked,setLocked]=useState(hasPIN);
+  const doUnlock=()=>setLocked(false);
+  const doBioUnlock=async()=>{
+    try{ await bioVerify(); clearFails(); setLocked(false); }catch{}
   };
-  const back = () => { setErr(""); setPin(p=>p.slice(0,-1)); };
+  if(locked){
+    return <LockScreen
+      onUnlock={doUnlock}
+      onBio={bioEnabled()?doBioUnlock:null}
+      lockout={lockoutRemaining()}
+    />;
+  }
+  return <App onLock={()=>{lockApp();setLocked(true);}}/>;
+}
 
-  const handleFull = async (full) => {
-    if(mode === "create"){
-      setFirstPin(full); setPin(""); setMode("confirm"); setBusy(false);
-    } else if(mode === "confirm"){
-      if(full !== firstPin){ setErr("兩次密碼不一致，請重設"); setPin(""); setFirstPin(""); setMode("create"); setBusy(false); return; }
-      await setupPIN(full);
-      for(const k of Object.values(KEYS)){
-        const raw = localStorage.getItem(k);
-        if(raw && !raw.startsWith('{"iv"')){ try{ localStorage.setItem(k, await encryptStr(raw)); }catch{} }
-      }
-      onUnlocked();
-    } else {
+ReactDOM.createRoot(document.getElementById("root")).render(<Root/>);
+</script>
+</body>
+</html>
+ } else {
       const ok = await unlockPIN(full);
       if(ok){ onUnlocked(); }
       else {
