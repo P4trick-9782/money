@@ -117,7 +117,7 @@
 const { useState, useEffect, useRef } = React;
 
 // ── Storage + Encryption ─────────────────────────────────────────
-const KEYS = { txns:"fin_txns", recurring:"fin_recurring", goals:"fin_goals", sync:"fin_sync", pending:"fin_pending", assets:"fin_assets", rates:"fin_rates", binance:"fin_binance" };
+const KEYS = { txns:"fin_txns", recurring:"fin_recurring", goals:"fin_goals", sync:"fin_sync", pending:"fin_pending", assets:"fin_assets", rates:"fin_rates", binance:"fin_binance", invest:"fin_invest" };
 
 // ── 多貨幣 ──
 const BASE_CCY = "TWD";
@@ -476,6 +476,8 @@ function App({ onLock }){
   const [rates,setRates]     = useState(null); // 匯率快取
   const [sync,setSync]       = useState({ url:"", token:"", lastSync:null, autoMins:0 });
   const [binance,setBinance] = useState({ apiKey:"", apiSecret:"", data:null, lastFetch:null });
+  const [invest,setInvest]   = useState([]);  // 投資持倉
+  const [investPrices,setInvestPrices] = useState({}); // 即時報價快取
   const [modal,setModal]     = useState(null);
   const [toast,setToast]     = useState(null);
   const [loaded,setLoaded]   = useState(false);
@@ -483,8 +485,8 @@ function App({ onLock }){
   const [year,setYear]       = useState(today().slice(0,4));
 
   useEffect(()=>{ (async()=>{
-    const t=await load(KEYS.txns), r=await load(KEYS.recurring), g=await load(KEYS.goals), s=await load(KEYS.sync), p=await load(KEYS.pending), a=await load(KEYS.assets), bn=await load(KEYS.binance);
-    if(t)setTxns(t); if(r)setRec(r); if(g)setGoals(g); if(s)setSync(s); if(p)setPending(p); if(a)setAssets(a); if(bn)setBinance(bn);
+    const t=await load(KEYS.txns), r=await load(KEYS.recurring), g=await load(KEYS.goals), s=await load(KEYS.sync), p=await load(KEYS.pending), a=await load(KEYS.assets), bn=await load(KEYS.binance), iv=await load(KEYS.invest);
+    if(t)setTxns(t); if(r)setRec(r); if(g)setGoals(g); if(s)setSync(s); if(p)setPending(p); if(a)setAssets(a); if(bn)setBinance(bn); if(iv)setInvest(iv);
     // 匯率：先載快取顯示，再背景更新
     const cached=await loadRates(); if(cached)setRates(cached);
     setLoaded(true);
@@ -521,6 +523,7 @@ function App({ onLock }){
   useEffect(()=>{ if(loaded)save(KEYS.pending,pending); },[pending,loaded]);
   useEffect(()=>{ if(loaded)save(KEYS.assets,assets); },[assets,loaded]);
   useEffect(()=>{ if(loaded)save(KEYS.binance,binance); },[binance,loaded]);
+  useEffect(()=>{ if(loaded)save(KEYS.invest,invest); },[invest,loaded]);
 
   const showToast=(msg,type="success")=>{ setToast({msg,type}); setTimeout(()=>setToast(null),2500); };
 
@@ -619,6 +622,25 @@ function App({ onLock }){
     }catch(e){ showToast(e.message||"抓取失敗","warn"); }
   };
 
+  // ── 投資報價 ──
+  const fetchInvestPrices = async (holdings) => {
+    const list = holdings || invest;
+    if(!list.length){ showToast("請先新增持倉","warn"); return; }
+    showToast("抓取報價中…");
+    try{
+      const symbols = [...new Set(list.map(h=>h.symbol))];
+      const res = await fetch(`${SUPABASE_URL}/functions/v1/price-proxy`, {
+        method:"POST",
+        headers:{ "Content-Type":"application/json", "apikey":SUPABASE_ANON },
+        body:JSON.stringify({ symbols })
+      });
+      const data = await res.json();
+      if(data.error) throw new Error(data.error);
+      setInvestPrices(data);
+      showToast("報價已更新 ✓");
+    }catch(e){ showToast(e.message||"報價抓取失敗","warn"); }
+  };
+
   // ── Supabase 後端：登入狀態 ──
   const [sbUser,setSbUser] = useState(sbSession()?.email||null);
 
@@ -711,7 +733,7 @@ function App({ onLock }){
         {tab==="txns"     && <Txns {...{txns,delTx,month,setMonth}}/>}
         {tab==="recurring"&& <Recurring {...{recurring,delRec,setModal}}/>}
         {tab==="goals"    && <Goals {...{goals,delGoal,updateGoal,setModal}}/>}
-        {tab==="assets"   && <Assets {...{assets,updateAsset,delAsset,setModal,rates,refreshRates,recurring,binance,fetchBinance}}/>}
+        {tab==="assets"   && <Assets {...{assets,updateAsset,delAsset,setModal,rates,refreshRates,recurring,binance,fetchBinance,invest,setInvest,investPrices,fetchInvestPrices,showToast}}/>}
         {tab==="stats"    && <Stats {...{txns,recurring,month,setMonth,year,setYear}}/>}
         {tab==="more"     && <More {...{exportCSV,exportJSON,importJSON,sync,setSync,pushCloud,pullCloud,showToast,onLock,sbUser,sbLogin,sbLogout,sbUpload,sbDownload,binance,setBinance}}/>}
         </div>
@@ -1017,7 +1039,155 @@ function BinanceCard({binance,fetchBinance}){
   );
 }
 
-function Assets({assets,updateAsset,delAsset,setModal,rates,refreshRates,recurring,binance,fetchBinance}){
+// ── 投資持倉區塊 ──────────────────────────────────────────────────
+const INVEST_TYPES = [
+  { key:"tw",    label:"台股",  color:"#007AFF", prefix:".TW" },
+  { key:"us",    label:"美股",  color:"#5856D6", prefix:""    },
+  { key:"etf",   label:"ETF",   color:"#34C759", prefix:""    },
+  { key:"crypto",label:"加密",  color:"#F0B90B", prefix:"-USD"},
+];
+function fmtPct(v){ return (v>=0?"+":"")+v.toFixed(2)+"%"; }
+
+function InvestSection({invest,setInvest,investPrices,fetchInvestPrices,rates,showToast}){
+  const [showAdd,setShowAdd] = useState(false);
+  const [editItem,setEditItem] = useState(null);
+  const [form,setForm] = useState({ symbol:"", name:"", units:"", costPerUnit:"", type:"tw" });
+
+  const usdToTwd = rates?.rates?.USD ? 1/rates.rates.USD : 32;
+
+  const holdings = invest.map(h=>{
+    const p = investPrices[h.symbol];
+    const price = p?.price ?? null;
+    const currency = p?.currency ?? (h.type==="tw" ? "TWD" : "USD");
+    const priceInTwd = price == null ? null : (currency==="TWD" ? price : price * usdToTwd);
+    const costInTwd = h.costPerUnit * (h.currency==="TWD" ? 1 : usdToTwd);
+    const currentVal = priceInTwd != null ? priceInTwd * h.units : null;
+    const costVal = costInTwd * h.units;
+    const pnl = currentVal != null ? currentVal - costVal : null;
+    const pct = pnl != null ? (pnl / costVal) * 100 : null;
+    return { ...h, price, priceInTwd, currentVal, costVal, pnl, pct, changePct: p?.changePct ?? null };
+  });
+
+  const totalCost = holdings.reduce((s,h)=>s+h.costVal,0);
+  const totalVal  = holdings.every(h=>h.currentVal!=null) ? holdings.reduce((s,h)=>s+(h.currentVal??h.costVal),0) : null;
+  const totalPnl  = totalVal != null ? totalVal - totalCost : null;
+
+  const openAdd = () => { setForm({ symbol:"", name:"", units:"", costPerUnit:"", type:"tw" }); setEditItem(null); setShowAdd(true); };
+  const openEdit = (h) => { setForm({ symbol:h.symbol, name:h.name, units:String(h.units), costPerUnit:String(h.costPerUnit), type:h.type }); setEditItem(h.id); setShowAdd(true); };
+
+  const saveHolding = () => {
+    const t = INVEST_TYPES.find(x=>x.key===form.type);
+    const rawSym = form.symbol.trim().toUpperCase();
+    const symbol = rawSym.includes(".")  || rawSym.includes("-") ? rawSym
+                 : form.type==="tw"      ? rawSym+".TW"
+                 : form.type==="crypto"  ? rawSym+"-USD"
+                 : rawSym;
+    const item = { id: editItem||uid(), symbol, name:form.name||symbol, units:Number(form.units)||0, costPerUnit:Number(form.costPerUnit)||0, currency:form.type==="tw"?"TWD":"USD", type:form.type };
+    if(editItem){ setInvest(p=>p.map(h=>h.id===editItem?item:h)); }
+    else { setInvest(p=>[...p,item]); }
+    setShowAdd(false);
+    showToast(editItem?"持倉已更新 ✓":"持倉已新增 ✓");
+  };
+
+  const del = (id) => { setInvest(p=>p.filter(h=>h.id!==id)); showToast("已刪除","warn"); };
+
+  return (
+    <div style={S.card}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+        <span style={{fontSize:15,fontWeight:"600"}}>📈 投資追蹤</span>
+        <div style={{display:"flex",gap:6}}>
+          {invest.length>0 && <button style={S.smallBtn} onClick={()=>fetchInvestPrices(invest)}>更新報價</button>}
+          <button style={S.smallBtn} onClick={openAdd}>+ 新增</button>
+        </div>
+      </div>
+
+      {totalVal!=null && (
+        <div style={{background:"#F2F2F7",borderRadius:16,padding:"10px 14px",marginBottom:10}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline"}}>
+            <span style={{fontSize:12,color:"#8E8E93"}}>投資組合總值</span>
+            <span style={{fontSize:18,fontWeight:"700"}}>NT$ {fmtMoney(totalVal)}</span>
+          </div>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",marginTop:4}}>
+            <span style={{fontSize:12,color:"#8E8E93"}}>總損益</span>
+            <span style={{fontSize:14,fontWeight:"600",color:totalPnl>=0?"#34C759":"#FF3B30"}}>
+              {totalPnl>=0?"+":""}{fmtMoney(totalPnl)} ({fmtPct(totalPnl/totalCost*100)})
+            </span>
+          </div>
+        </div>
+      )}
+
+      {holdings.length===0 && (
+        <p style={{textAlign:"center",color:"#8E8E93",fontSize:13,padding:"12px 0"}}>點「+ 新增」加入第一筆持倉</p>
+      )}
+
+      {holdings.map(h=>{
+        const t = INVEST_TYPES.find(x=>x.key===h.type)||INVEST_TYPES[0];
+        return (
+          <div key={h.id} style={{display:"flex",alignItems:"center",gap:10,background:"#F9F9F9",borderRadius:14,padding:"10px 12px",marginBottom:6}}>
+            <div style={{width:36,height:36,borderRadius:10,background:t.color+"22",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>
+              <span style={{fontSize:11,fontWeight:"700",color:t.color}}>{t.label}</span>
+            </div>
+            <div style={{flex:1,minWidth:0}}>
+              <div style={{fontSize:13,fontWeight:"600",color:"#1C1C1E"}}>{h.name}</div>
+              <div style={{fontSize:11,color:"#8E8E93"}}>{h.units} 股 · 成本 {h.currency==="TWD"?"NT$":"$"}{h.costPerUnit.toLocaleString()}</div>
+              {h.priceInTwd!=null && (
+                <div style={{fontSize:11,color:h.changePct>=0?"#34C759":"#FF3B30",marginTop:1}}>
+                  NT${h.priceInTwd.toLocaleString("zh-TW",{maximumFractionDigits:1})} {h.changePct!=null&&fmtPct(h.changePct)}
+                </div>
+              )}
+              {h.priceInTwd==null && <div style={{fontSize:11,color:"#8E8E93"}}>點「更新報價」取得即時價格</div>}
+            </div>
+            <div style={{textAlign:"right",flexShrink:0}}>
+              {h.currentVal!=null && <div style={{fontSize:13,fontWeight:"600"}}>NT${fmtMoney(h.currentVal)}</div>}
+              {h.pnl!=null && <div style={{fontSize:11,color:h.pnl>=0?"#34C759":"#FF3B30"}}>{h.pnl>=0?"+":""}{fmtMoney(h.pnl)}</div>}
+              <div style={{display:"flex",gap:4,marginTop:4,justifyContent:"flex-end"}}>
+                <button onClick={()=>openEdit(h)} style={{fontSize:11,background:"none",border:"none",color:"#007AFF",cursor:"pointer",padding:2}}>編輯</button>
+                <button onClick={()=>del(h.id)} style={{fontSize:11,background:"none",border:"none",color:"#FF3B30",cursor:"pointer",padding:2}}>刪除</button>
+              </div>
+            </div>
+          </div>
+        );
+      })}
+
+      {showAdd && (
+        <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.4)",display:"flex",alignItems:"flex-end",zIndex:300}} onClick={()=>setShowAdd(false)}>
+          <div style={{background:"#F2F2F7",borderRadius:"28px 28px 0 0",width:"100%",maxWidth:430,margin:"0 auto",padding:"16px 16px calc(16px + env(safe-area-inset-bottom))"}} onClick={e=>e.stopPropagation()}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
+              <span style={{fontSize:16,fontWeight:"600"}}>{editItem?"編輯持倉":"新增持倉"}</span>
+              <button onClick={()=>setShowAdd(false)} style={{background:"none",border:"none",fontSize:22,color:"#8E8E93",cursor:"pointer"}}>×</button>
+            </div>
+            <div style={{display:"flex",gap:6,marginBottom:10}}>
+              {INVEST_TYPES.map(t=>(
+                <button key={t.key} onClick={()=>setForm(f=>({...f,type:t.key}))}
+                  style={{flex:1,padding:"7px 4px",borderRadius:12,border:"1.5px solid "+(form.type===t.key?t.color:"#E5E5EA"),background:form.type===t.key?t.color+"18":"#fff",fontSize:12,fontWeight:"600",color:form.type===t.key?t.color:"#3C3C43",cursor:"pointer"}}>
+                  {t.label}
+                </button>
+              ))}
+            </div>
+            <label style={S.label}>股票代號</label>
+            <input style={S.inputField} value={form.symbol} onChange={e=>setForm(f=>({...f,symbol:e.target.value}))}
+              placeholder={form.type==="tw"?"如：0050（自動加 .TW）":form.type==="crypto"?"如：BTC（自動加 -USD）":"如：NVDA"}/>
+            <label style={S.label}>名稱（選填）</label>
+            <input style={S.inputField} value={form.name} onChange={e=>setForm(f=>({...f,name:e.target.value}))} placeholder="如：台灣50、輝達"/>
+            <div style={{display:"flex",gap:8}}>
+              <div style={{flex:1}}>
+                <label style={S.label}>持有數量（股/顆）</label>
+                <input style={S.inputField} type="number" value={form.units} onChange={e=>setForm(f=>({...f,units:e.target.value}))} placeholder="40"/>
+              </div>
+              <div style={{flex:1}}>
+                <label style={S.label}>平均成本（每股）</label>
+                <input style={S.inputField} type="number" value={form.costPerUnit} onChange={e=>setForm(f=>({...f,costPerUnit:e.target.value}))} placeholder="155"/>
+              </div>
+            </div>
+            <button style={S.primaryBtn} onClick={saveHolding}>{editItem?"儲存":"確認新增"}</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Assets({assets,updateAsset,delAsset,setModal,rates,refreshRates,recurring,binance,fetchBinance,invest,setInvest,investPrices,fetchInvestPrices,showToast}){
   const [editId,setEditId]=useState(null);
   const [editVal,setEditVal]=useState("");
 
@@ -1047,6 +1217,9 @@ function Assets({assets,updateAsset,delAsset,setModal,rates,refreshRates,recurri
 
       {/* Binance */}
       <BinanceCard binance={binance} fetchBinance={fetchBinance}/>
+
+      {/* 投資追蹤 */}
+      <InvestSection invest={invest} setInvest={setInvest} investPrices={investPrices} fetchInvestPrices={fetchInvestPrices} rates={rates} showToast={showToast}/>
 
       {/* 匯率列 */}
       <div style={S.card}>
