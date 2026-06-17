@@ -496,6 +496,7 @@ function monthlyEquiv(r){
 function App({ onLock }){
   const [tab,setTab]         = useState("home");
   const [tabDir,setTabDir]   = useState("right"); // 切換方向：right=前進, left=後退
+  const scrollRef            = useRef(null);
   const [txns,setTxns]       = useState([]);
   const [recurring,setRec]   = useState([]);
   const [goals,setGoals]     = useState([]);
@@ -784,13 +785,14 @@ function App({ onLock }){
   const changeTab=(next)=>{
     const dir = TAB_ORDER.indexOf(next) >= TAB_ORDER.indexOf(tab) ? "right" : "left";
     setTabDir(dir); setTab(next);
+    if(scrollRef.current) scrollRef.current.scrollTop = 0;
   };
   const animClass = tabDir==="right" ? "anim-right" : "anim-left";
 
   return (
     <div style={S.shell}>
       <div style={S.statusBar}/>
-      <div style={S.content}>
+      <div style={S.content} ref={scrollRef}>
         <div key={tab} className={animClass}>
         {tab==="home"     && <Home {...{mTx,mInc,mExp,mSav,recMonthly,balance,month,setMonth,delTx,setModal,recurring,goals,pending,confirmPending,dismissPending,updatePending,showToast,budgets,txns}}/>}
         {tab==="txns"     && <Txns {...{txns,delTx,month,setMonth}}/>}
