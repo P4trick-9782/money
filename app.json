@@ -1,0 +1,57 @@
+{
+  "expo": {
+    "name": "我的記帳",
+    "slug": "fin-native",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "icon": "./icon-512.png",
+    "scheme": "finapp",
+    "userInterfaceStyle": "automatic",
+    "splash": {
+      "image": "./icon-512.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#F7F8FA"
+    },
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.local.finapp",
+      "infoPlist": {
+        "NSFaceIDUsageDescription": "用 Face ID 解鎖記帳資料",
+        "NSCameraUsageDescription": "用相機掃描收據",
+        "NSMicrophoneUsageDescription": "用麥克風記錄語音輸入",
+        "ITSAppUsesNonExemptEncryption": false
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./icon-512.png",
+        "backgroundColor": "#F7F8FA"
+      },
+      "package": "com.local.finapp",
+      "permissions": [
+        "android.permission.USE_BIOMETRIC",
+        "android.permission.USE_FINGERPRINT",
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.MODIFY_AUDIO_SETTINGS"
+      ]
+    },
+    "plugins": [
+      "expo-router",
+      "expo-local-authentication",
+      "expo-camera",
+      "expo-av",
+      "expo-asset",
+      "expo-secure-store",
+      "expo-font"
+    ],
+    "extra": {
+      "router": {
+        "origin": false
+      },
+      "eas": {
+        "projectId": "025b8f33-c519-465b-b9cc-2ac0c15fda4b"
+      }
+    }
+  }
+}
